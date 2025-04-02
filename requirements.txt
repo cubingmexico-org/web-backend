@@ -4,3 +4,4 @@ pandas
 SQLAlchemy
 psycopg2-binary
 google-cloud-secret-manager
+gunicorn
