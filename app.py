@@ -2,6 +2,7 @@ import re
 import io
 import zipfile
 import requests
+import logging
 import pandas as pd
 from datetime import datetime
 from flask import Flask, jsonify, request
@@ -11,6 +12,14 @@ import os
 from utils import get_state_from_coordinates
 
 app = Flask(__name__)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+log = logging.getLogger(__name__)
 
 def get_secret(secret_id, project_id, version_id="latest"):
     client = secretmanager.SecretManagerServiceClient()
@@ -37,7 +46,7 @@ def update_full_database():
             for file_name in z.namelist():
                 # Process Competitions file
                 if file_name == "WCA_export_Competitions.tsv":
-                    print("Processing file:", file_name)
+                    log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
                     cleaned_content = file_content.replace('"', '')
                     df = pd.read_csv(io.StringIO(cleaned_content),
@@ -45,10 +54,10 @@ def update_full_database():
                                      na_values=["NULL"])
                     competitions = df.to_dict(orient="records")
                     with engine.begin() as conn:
-                        states = conn.execute(text("SELECT * FROM state")).fetchall()
-                        delegates = conn.execute(text("SELECT id FROM delegate")).fetchall()
-                        organisers = conn.execute(text("SELECT id FROM organiser")).fetchall()
-                        existing = conn.execute(text("SELECT id FROM competition")).fetchall()
+                        states = conn.execute(text("SELECT * FROM states")).fetchall()
+                        delegates = conn.execute(text("SELECT id FROM delegates")).fetchall()
+                        organisers = conn.execute(text("SELECT id FROM organisers")).fetchall()
+                        existing = conn.execute(text("SELECT id FROM competitions")).fetchall()
                         existing_ids = {row.id for row in existing}
                         for row in competitions:
                             if row["id"] in existing_ids:
@@ -65,8 +74,8 @@ def update_full_database():
                             start_date = datetime(row["year"], row["month"], row["day"])
                             end_date = datetime(row["year"], row["endMonth"], row["endDay"])
                             conn.execute(text("""
-                                INSERT INTO competition 
-                                (id, name, cityName, countryId, information, startDate, endDate, cancelled, venue, venueAddress, venueDetails, external_website, cellName, latitude, longitude, stateId)
+                                INSERT INTO competitions 
+                                (id, name, "cityName", "countryId", information, "startDate", "endDate", cancelled, venue, "venueAddress", "venueDetails", external_website, "cellName", latitude, longitude, "stateId")
                                 VALUES (:id, :name, :cityName, :countryId, :information, :startDate, :endDate, :cancelled, :venue, :venueAddress, :venueDetails, :external_website, :cellName, :latitude, :longitude, :stateId)
                                 ON CONFLICT DO NOTHING
                             """), {
@@ -91,7 +100,7 @@ def update_full_database():
                                 # Process eventSpecs into competitionEvent table
                                 for event_spec in str(row["eventSpecs"]).split():
                                     conn.execute(text("""
-                                        INSERT INTO competitionEvent (competitionId, eventId)
+                                        INSERT INTO competition_events (competitionId, eventId)
                                         VALUES (:competitionId, :eventId)
                                         ON CONFLICT DO NOTHING
                                     """), {
@@ -105,17 +114,17 @@ def update_full_database():
                                     organiser_email = match.group(2)
                                     exists = any(o.id == organiser_email for o in organisers)
                                     person_res = conn.execute(text("""
-                                        SELECT id FROM person WHERE name = :name
+                                        SELECT id FROM persons WHERE name = :name
                                     """), {"name": organiser_name}).fetchone()
                                     person_id = person_res.id if person_res else None
                                     if not exists:
                                         conn.execute(text("""
-                                            INSERT INTO organiser (id, personId, status)
+                                            INSERT INTO organisers (id, "personId", status)
                                             VALUES (:id, :personId, 'active')
                                             ON CONFLICT DO NOTHING
                                         """), {"id": organiser_email, "personId": person_id})
                                     conn.execute(text("""
-                                        INSERT INTO competitionOrganiser (competitionId, organiserId)
+                                        INSERT INTO competition_organisers ("competitionId", "organiserId")
                                         VALUES (:competitionId, :organiserId)
                                         ON CONFLICT DO NOTHING
                                     """), {"competitionId": row["id"], "organiserId": organiser_email})
@@ -126,31 +135,31 @@ def update_full_database():
                                     delegate_email = match.group(2)
                                     exists = any(d.id == delegate_email for d in delegates)
                                     person_res = conn.execute(text("""
-                                        SELECT id FROM person WHERE name = :name
+                                        SELECT id FROM persons WHERE name = :name
                                     """), {"name": delegate_name}).fetchone()
                                     person_id = person_res.id if person_res else None
                                     if not exists and person_id:
                                         conn.execute(text("""
-                                            INSERT INTO delegate (id, personId, status)
+                                            INSERT INTO delegates (id, "personId", status)
                                             VALUES (:id, :personId, 'active')
                                             ON CONFLICT DO NOTHING
                                         """), {"id": delegate_email, "personId": person_id})
                                     if exists or person_id:
                                         conn.execute(text("""
-                                            INSERT INTO competitionDelegate (competitionId, delegateId)
+                                            INSERT INTO competition_delegates ("competitionId", "delegateId")
                                             VALUES (:competitionId, :delegateId)
                                             ON CONFLICT DO NOTHING
                                         """), {"competitionId": row["id"], "delegateId": delegate_email})
                 # Process Events file
                 elif file_name == "WCA_export_Events.tsv":
-                    print("Processing file:", file_name)
+                    log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
                     df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True)
                     events = df.to_dict(orient="records")
                     with engine.begin() as conn:
                         for row in events:
                             conn.execute(text("""
-                                INSERT INTO event (id, format, name, rank, cellName)
+                                INSERT INTO events (id, format, name, rank, "cellName")
                                 VALUES (:id, :format, :name, :rank, :cellName)
                                 ON CONFLICT DO NOTHING
                             """), {
@@ -162,15 +171,25 @@ def update_full_database():
                             })
                 # Process Persons file
                 elif file_name == "WCA_export_Persons.tsv":
-                    print("Processing file:", file_name)
+                    log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
                     df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True, na_values=["NULL"])
                     persons = df.to_dict(orient="records")
-                    cleaned_persons = [p for p in persons if p["countryId"] == "Mexico"]
+                    cleaned_persons = []
+                    for p in persons:
+                        if p["countryId"] == "Mexico":
+                            gender = p.get("gender")
+                            # pandas NaN becomes None, valid genders stay as 1-char strings
+                            gender = None if pd.isna(gender) else str(gender)
+                            cleaned_persons.append({
+                                "id": p["id"],
+                                "name": p["name"],
+                                "gender": gender
+                            })
                     with engine.begin() as conn:
                         for row in cleaned_persons:
                             conn.execute(text("""
-                                INSERT INTO person (id, name, gender)
+                                INSERT INTO persons (id, name, gender)
                                 VALUES (:id, :name, :gender)
                                 ON CONFLICT DO NOTHING
                             """), {
@@ -180,19 +199,21 @@ def update_full_database():
                             })
                 # Process RanksAverage file
                 elif file_name == "WCA_export_RanksAverage.tsv":
-                    print("Processing file:", file_name)
+                    log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
-                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True)
+                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True, low_memory=False)
                     data = df.to_dict(orient="records")
                     # Fetch person ids from DB
                     with engine.begin() as conn:
-                        persons = conn.execute(text("SELECT id FROM person")).fetchall()
+                        persons = conn.execute(text("SELECT id FROM persons")).fetchall()
                         person_ids = {p.id for p in persons}
                         filtered = [d for d in data if d["personId"] in person_ids]
-                        conn.execute(text("DELETE FROM rankAverage"))
+                        conn.execute(text("""
+                            DELETE FROM "ranksAverage"
+                        """))
                         for row in filtered:
                             conn.execute(text("""
-                                INSERT INTO rankAverage (personId, eventId, best, worldRank, continentRank, countryRank)
+                                INSERT INTO "ranksAverage" ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
                                 VALUES (:personId, :eventId, :best, :worldRank, :continentRank, :countryRank)
                                 ON CONFLICT DO NOTHING
                             """), {
@@ -205,18 +226,20 @@ def update_full_database():
                             })
                 # Process RanksSingle file
                 elif file_name == "WCA_export_RanksSingle.tsv":
-                    print("Processing file:", file_name)
+                    log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
-                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True)
+                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True, low_memory=False)
                     data = df.to_dict(orient="records")
                     with engine.begin() as conn:
-                        persons = conn.execute(text("SELECT id FROM person")).fetchall()
+                        persons = conn.execute(text("SELECT id FROM persons")).fetchall()
                         person_ids = {p.id for p in persons}
                         filtered = [d for d in data if d["personId"] in person_ids]
-                        conn.execute(text("DELETE FROM rankSingle"))
+                        conn.execute(text("""
+                            DELETE FROM "ranksSingle"
+                        """))
                         for row in filtered:
                             conn.execute(text("""
-                                INSERT INTO rankSingle (personId, eventId, best, worldRank, continentRank, countryRank)
+                                INSERT INTO "ranksSingle" ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
                                 VALUES (:personId, :eventId, :best, :worldRank, :continentRank, :countryRank)
                                 ON CONFLICT DO NOTHING
                             """), {
@@ -229,27 +252,39 @@ def update_full_database():
                             })
                 # Process Results file
                 elif file_name == "WCA_export_Results.tsv":
-                    print("Processing file:", file_name)
+                    log.info(f"Processing file: {file_name}")
                     file_bytes = z.read(file_name)
                     chunk_size = 10_000_000
                     total_chunks = -(-len(file_bytes) // chunk_size)  # ceiling division
                     headers = None
                     with engine.begin() as conn:
-                        conn.execute(text("DELETE FROM result"))
+                        conn.execute(text("DELETE FROM results"))
                         for i in range(total_chunks):
                             start = i * chunk_size
                             end = (i + 1) * chunk_size
                             chunk = file_bytes[start:end].decode("utf-8", errors="ignore")
                             if i == 0:
-                                parsed = pd.read_csv(io.StringIO(chunk), delimiter="\t", skip_blank_lines=True, na_values=["NULL"])
+                                parsed = pd.read_csv(
+                                    io.StringIO(chunk),
+                                    delimiter="\t",
+                                    skip_blank_lines=True,
+                                    na_values=["NULL"],
+                                    low_memory=False
+                                )
                                 headers = parsed.columns.tolist()
                             chunk_with_headers = "\t".join(headers) + "\n" + chunk
-                            df_chunk = pd.read_csv(io.StringIO(chunk_with_headers), delimiter="\t", skip_blank_lines=True, na_values=["NULL"])
+                            df_chunk = pd.read_csv(
+                                io.StringIO(chunk_with_headers),
+                                delimiter="\t",
+                                skip_blank_lines=True,
+                                na_values=["NULL"],
+                                low_memory=False
+                            )
                             df_filtered = df_chunk[df_chunk["personCountryId"] == "Mexico"]
                             for _, row in df_filtered.iterrows():
                                 conn.execute(text("""
-                                    INSERT INTO result 
-                                    (competitionId, eventId, roundTypeId, pos, best, average, personId, formatId, value1, value2, value3, value4, value5, regionalSingleRecord, regionalAverageRecord)
+                                    INSERT INTO results 
+                                    ("competitionId", "eventId", "roundTypeId", pos, best, average, "personId", "formatId", value1, value2, value3, value4, value5, "regionalSingleRecord", "regionalAverageRecord")
                                     VALUES (:competitionId, :eventId, :roundTypeId, :pos, :best, :average, :personId, :formatId, :value1, :value2, :value3, :value4, :value5, :regionalSingleRecord, :regionalAverageRecord)
                                     ON CONFLICT DO NOTHING
                                 """), {
@@ -269,10 +304,10 @@ def update_full_database():
                                     "regionalSingleRecord": row["regionalSingleRecord"],
                                     "regionalAverageRecord": row["regionalAverageRecord"]
                                 })
-        print("Database updated successfully")
+        log.info("Database updated successfully")
         return jsonify({"success": True, "message": "Database updated successfully"})
     except Exception as e:
-        print(e)
+        log.error(e)
         return jsonify({"success": False, "message": "Error updating database"}), 500
 
 if __name__ == "__main__":
