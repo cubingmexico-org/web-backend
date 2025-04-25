@@ -11,6 +11,9 @@ from google.cloud import secretmanager
 import os
 from utils import get_state_from_coordinates
 
+EXCLUDED_EVENTS = ["333ft", "333mbo", "magic", "mmagic"]
+SINGLE_EVENTS = ["333fm", "333bf", "333mbf", "444bf", "555bf"]
+
 app = Flask(__name__)
 
 logging.basicConfig(
@@ -309,6 +312,331 @@ def update_full_database():
     except Exception as e:
         log.error(e)
         return jsonify({"success": False, "message": "Error updating database"}), 500
+
+@app.route("/update-state-ranks", methods=["POST"])
+def update_state_ranks():
+    try:
+        with engine.begin() as conn:
+            # Reset stateRank values
+            conn.execute(text("UPDATE rankSingle SET stateRank = NULL"))
+            conn.execute(text("UPDATE rankAverage SET stateRank = NULL"))
+            
+            # Fetch all states
+            states = conn.execute(text("SELECT id, name FROM states")).fetchall()
+
+            # Fetch events excluding EXCLUDED_EVENTS
+            # Use a tuple for parameter binding; if empty, fetch all events.
+            if EXCLUDED_EVENTS:
+                events = conn.execute(
+                    text("SELECT id FROM events WHERE id NOT IN :excluded")
+                    .bindparams(excluded=tuple(EXCLUDED_EVENTS))
+                ).fetchall()
+            else:
+                events = conn.execute(text("SELECT id FROM events")).fetchall()
+
+            # Prepare lists to hold update data for single and average ranks
+            single_updates = []
+            average_updates = []
+
+            # Loop through each state and event
+            for state_row in states:
+                state_name = state_row.name
+                for event_row in events:
+                    # Process rankSingle updates
+                    single_data = conn.execute(text("""
+                        SELECT rs.personId, rs.eventId
+                        FROM rankSingle rs
+                        INNER JOIN persons p ON rs.personId = p.id
+                        LEFT JOIN states st ON p.stateId = st.id
+                        WHERE rs.countryRank <> 0
+                          AND rs.eventId = :event_id
+                          AND st.name = :state_name
+                        ORDER BY rs.countryRank ASC
+                    """), {"event_id": event_row.id, "state_name": state_name}).fetchall()
+
+                    single_state_rank = 1
+                    for record in single_data:
+                        single_updates.append({
+                            "personId": record.personId,
+                            "eventId": record.eventId,
+                            "stateRank": single_state_rank
+                        })
+                        single_state_rank += 1
+
+                    # Process rankAverage updates
+                    average_data = conn.execute(text("""
+                        SELECT ra.personId, ra.eventId
+                        FROM rankAverage ra
+                        INNER JOIN persons p ON ra.personId = p.id
+                        LEFT JOIN states st ON p.stateId = st.id
+                        WHERE ra.countryRank <> 0
+                          AND ra.eventId = :event_id
+                          AND st.name = :state_name
+                        ORDER BY ra.countryRank ASC
+                    """), {"event_id": event_row.id, "state_name": state_name}).fetchall()
+
+                    average_state_rank = 1
+                    for record in average_data:
+                        average_updates.append({
+                            "personId": record.personId,
+                            "eventId": record.eventId,
+                            "stateRank": average_state_rank
+                        })
+                        average_state_rank += 1
+
+            # Execute updates in a transaction
+            with engine.begin() as conn_tx:
+                for update in single_updates:
+                    conn_tx.execute(text("""
+                        UPDATE rankSingle 
+                        SET stateRank = :stateRank 
+                        WHERE personId = :personId AND eventId = :eventId
+                    """), update)
+                for update in average_updates:
+                    conn_tx.execute(text("""
+                        UPDATE rankAverage 
+                        SET stateRank = :stateRank 
+                        WHERE personId = :personId AND eventId = :eventId
+                    """), update)
+        log.info("State rankings updated successfully")
+        return jsonify({"success": True, "message": "State rankings updated successfully"})
+    except Exception as e:
+        log.error(e)
+        return jsonify({"success": False, "message": "Error updating state rankings"}), 500
+
+@app.route("/update-sum-of-ranks", methods=["POST"])
+def update_sum_of_ranks():
+    try:
+        # Build a CSV string for the excluded events
+        excluded = ",".join(f"'{e}'" for e in EXCLUDED_EVENTS)
+
+        # Query for single results
+        single_query = f"""
+        WITH "allEvents" AS (
+          SELECT DISTINCT "eventId" FROM "ranksSingle"
+          WHERE "eventId" NOT IN ({excluded})
+        ),
+        "allPeople" AS (
+          SELECT DISTINCT id, name FROM persons
+        ),
+        "peopleEvents" AS (
+          SELECT "allPeople".id, "allPeople".name, "allEvents"."eventId"
+          FROM "allPeople" CROSS JOIN "allEvents"
+        )
+        SELECT
+          pe.id,
+          pe.name,
+          json_agg(
+            json_build_object(
+              'eventId', pe."eventId",
+              'countryRank', COALESCE(rs."countryRank", wr."worstRank"),
+              'completed', CASE WHEN rs."countryRank" IS NULL THEN false ELSE true END
+            )
+          ) AS events,
+          SUM(COALESCE(rs."countryRank", wr."worstRank")) AS overall
+        FROM "peopleEvents" pe
+        LEFT JOIN "ranksSingle" rs 
+            ON pe.id = rs."personId" AND pe."eventId" = rs."eventId"
+        LEFT JOIN (
+          SELECT "eventId", MAX("countryRank") + 1 as "worstRank"
+          FROM public."ranksSingle"
+          GROUP BY "eventId"
+        ) AS wr 
+            ON wr."eventId" = pe."eventId"
+        GROUP BY pe.id, pe.name
+        ORDER BY overall
+        """
+
+        # Query for average results
+        average_query = f"""
+        WITH "allEvents" AS (
+          SELECT DISTINCT "eventId" FROM "ranksAverage"
+          WHERE "eventId" NOT IN ({excluded})
+        ),
+        "allPeople" AS (
+          SELECT DISTINCT id, name FROM persons
+        ),
+        "peopleEvents" AS (
+          SELECT "allPeople".id, "allPeople".name, "allEvents"."eventId"
+          FROM "allPeople" CROSS JOIN "allEvents"
+        )
+        SELECT
+          pe.id,
+          pe.name,
+          json_agg(
+            json_build_object(
+              'eventId', pe."eventId",
+              'countryRank', COALESCE(ra."countryRank", wr."worstRank"),
+              'completed', CASE WHEN ra."countryRank" IS NULL THEN false ELSE true END
+            )
+          ) AS events,
+          SUM(COALESCE(ra."countryRank", wr."worstRank")) AS overall
+        FROM "peopleEvents" pe
+        LEFT JOIN "ranksAverage" ra 
+            ON pe.id = ra."personId" AND pe."eventId" = ra."eventId"
+        LEFT JOIN (
+          SELECT "eventId", MAX("countryRank") + 1 as "worstRank"
+          FROM public."ranksAverage"
+          GROUP BY "eventId"
+        ) AS wr 
+            ON wr."eventId" = pe."eventId"
+        GROUP BY pe.id, pe.name
+        ORDER BY overall
+        """
+
+        # Process single results in a transaction
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM sumOfRanks WHERE resultType = 'single'"))
+            result = conn.execute(text(single_query))
+            persons = result.fetchall()
+            for index, row in enumerate(persons):
+                conn.execute(text("""
+                    INSERT INTO sumOfRanks (rank, personId, resultType, overall, events)
+                    VALUES (:rank, :personId, :resultType, :overall, :events)
+                """), {
+                    "rank": index + 1,
+                    "personId": row.id,
+                    "resultType": "single",
+                    "overall": row.overall,
+                    "events": row.events
+                })
+
+        # Process average results in a transaction
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM sumOfRanks WHERE resultType = 'average'"))
+            result = conn.execute(text(average_query))
+            persons = result.fetchall()
+            for index, row in enumerate(persons):
+                conn.execute(text("""
+                    INSERT INTO sumOfRanks (rank, personId, resultType, overall, events)
+                    VALUES (:rank, :personId, :resultType, :overall, :events)
+                """), {
+                    "rank": index + 1,
+                    "personId": row.id,
+                    "resultType": "average",
+                    "overall": row.overall,
+                    "events": row.events
+                })
+
+        log.info("Sum of ranks updated successfully")
+        return jsonify({"success": True, "message": "Sum of ranks updated successfully"})
+    except Exception as e:
+        log.error(e)
+        return jsonify({"success": False, "message": "Error updating sum of ranks"}), 500
+
+@app.route("/update-kinch-ranks", methods=["POST"])
+def update_kinch_ranks():
+    try:
+        # Build CSV strings for excluded and single events
+        excluded = ",".join(f"'{e}'" for e in EXCLUDED_EVENTS)
+        single_events = ",".join(f"'{e}'" for e in SINGLE_EVENTS)
+
+        query = f"""
+        WITH PersonalRecords AS (
+          SELECT
+            "personId",
+            "eventId",
+            MIN(best) AS personal_best,
+            'average' AS type
+          FROM "ranksAverage"
+          WHERE "eventId" NOT IN ({excluded})
+          GROUP BY "personId", "eventId"
+          UNION ALL
+          SELECT
+            "personId",
+            "eventId",
+            MIN(best) AS personal_best,
+            'single' AS type
+          FROM "ranksSingle"
+          WHERE "eventId" IN ({single_events})
+          GROUP BY "personId", "eventId"
+        ),
+        NationalRecords AS (
+          SELECT
+            "eventId",
+            MIN(best) AS national_best,
+            'average' AS type
+          FROM "ranksAverage"
+          WHERE "countryRank" = 1 AND "eventId" NOT IN ({excluded})
+          GROUP BY "eventId"
+          UNION ALL
+          SELECT
+            "eventId",
+            MIN(best) AS national_best,
+            'single' AS type
+          FROM "ranksSingle"
+          WHERE "countryRank" = 1 AND "eventId" IN ({single_events})
+          GROUP BY "eventId"
+        ),
+        Persons AS (
+          SELECT DISTINCT "personId" FROM "ranksSingle"
+        ),
+        Events AS (
+          SELECT id FROM "events" WHERE id NOT IN ({excluded})
+        ),
+        Ratios AS (
+          SELECT  
+            p."personId",
+            e.id AS "eventId",
+            MAX(
+              CASE 
+                WHEN e.id = '333mbf' THEN
+                  CASE 
+                    WHEN COALESCE(pr.personal_best, 0) != 0 THEN 
+                      ((99 - CAST(SUBSTRING(CAST(pr.personal_best AS TEXT), 1, 2) AS FLOAT) +
+                      (1 - (CAST(SUBSTRING(CAST(pr.personal_best AS TEXT), 3, 5) AS FLOAT) / 3600))) / 
+                      ((99 - CAST(SUBSTRING(CAST(nr.national_best AS TEXT), 1, 2) AS FLOAT)) +
+                      (1 - (CAST(SUBSTRING(CAST(nr.national_best AS TEXT), 3, 5) AS FLOAT) / 3600))) * 100
+                    ELSE 0
+                  END
+                WHEN COALESCE(pr.personal_best, 0) != 0 THEN 
+                  (nr.national_best / COALESCE(pr.personal_best, 0)::FLOAT) * 100
+                ELSE 0
+              END
+            ) AS best_ratio
+          FROM Persons p
+          CROSS JOIN Events e
+          LEFT JOIN PersonalRecords pr ON p."personId" = pr."personId" AND e.id = pr."eventId"
+          LEFT JOIN NationalRecords nr ON e.id = nr."eventId" AND pr.type = nr.type
+          GROUP BY p."personId", e.id
+        )
+        SELECT 
+          r."personId" AS id,
+          json_agg(
+            json_build_object(
+              'eventId', r."eventId",
+              'ratio', r.best_ratio
+            )
+          ) AS events,
+          AVG(r.best_ratio) AS overall
+        FROM Ratios r
+        GROUP BY r."personId"
+        ORDER BY overall DESC;
+        """
+
+        with engine.begin() as conn:
+            # Delete all existing kinchRanks records
+            conn.execute(text("DELETE FROM kinchRanks"))
+
+            result = conn.execute(text(query))
+            persons = result.fetchall()
+
+            for index, row in enumerate(persons):
+                conn.execute(text("""
+                    INSERT INTO kinchRanks (rank, personId, overall, events)
+                    VALUES (:rank, :personId, :overall, :events)
+                """), {
+                    "rank": index + 1,
+                    "personId": row.id,
+                    "overall": row.overall,
+                    "events": row.events
+                })
+
+        log.info("Kinch ranks updated successfully")
+        return jsonify({"success": True, "message": "Kinch ranks updated successfully"})
+    except Exception as e:
+        log.error(e)
+        return jsonify({"success": False, "message": "Error updating kinch ranks"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
