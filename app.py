@@ -320,9 +320,11 @@ def update_state_ranks():
             # Reset stateRank values
             conn.execute(text("""UPDATE "ranksSingle" SET "stateRank" = NULL"""))
             conn.execute(text("""UPDATE "ranksAverage" SET "stateRank" = NULL"""))
-            
+            log.info("State ranks reset for ranksSingle and ranksAverage")
+
             # Fetch all states
             states = conn.execute(text("SELECT id, name FROM states")).fetchall()
+            log.info(f"Fetched {len(states)} states")
 
             # Fetch events excluding EXCLUDED_EVENTS
             # Use a tuple for parameter binding; if empty, fetch all events.
@@ -333,15 +335,19 @@ def update_state_ranks():
                 ).fetchall()
             else:
                 events = conn.execute(text("SELECT id FROM events")).fetchall()
+            log.info(f"Fetched {len(events)} events (excluded: {EXCLUDED_EVENTS})")
 
             # Prepare lists to hold update data for single and average ranks
             single_updates = []
             average_updates = []
+            log.info("Starting computation of stateRank values for each state and event")
 
             # Loop through each state and event
             for state_row in states:
+                log.info(f"Processing state: {state_row.name}")
                 state_name = state_row.name
                 for event_row in events:
+                    log.info(f"  - Event: {event_row.id}")
                     # Process ranksSingle updates
                     single_data = conn.execute(text("""
                         SELECT rs."personId", rs."eventId"
@@ -384,20 +390,41 @@ def update_state_ranks():
                         })
                         average_state_rank += 1
 
+            log.info(f"Computed {len(single_updates)} single_updates and {len(average_updates)} average_updates")
+
             # Execute updates in a transaction
             with engine.begin() as conn_tx:
-                for update in single_updates:
-                    conn_tx.execute(text("""
-                        UPDATE "ranksSingle" 
-                        SET "stateRank" = :stateRank 
-                        WHERE "personId" = :personId AND "eventId" = :eventId
-                    """), update)
-                for update in average_updates:
-                    conn_tx.execute(text("""
-                        UPDATE "ranksAverage" 
-                        SET "stateRank" = :stateRank 
-                        WHERE "personId" = :personId AND "eventId" = :eventId
-                    """), update)
+                log.info("Applying single stateRank updates")
+                if single_updates:
+                    single_values = ", ".join(
+                        f"('{u['personId']}', '{u['eventId']}', {u['stateRank']})"
+                        for u in single_updates
+                    )
+                    conn_tx.execute(text(f'''
+                        UPDATE "ranksSingle" rs
+                        SET "stateRank" = updates."stateRank"
+                        FROM (
+                            VALUES {single_values}
+                        ) AS updates("personId", "eventId", "stateRank")
+                        WHERE rs."personId" = updates."personId"
+                        AND rs."eventId" = updates."eventId"
+                    '''))
+                log.info("Applying average stateRank updates")
+                if average_updates:
+                    average_values = ", ".join(
+                        f"('{u['personId']}', '{u['eventId']}', {u['stateRank']})"
+                        for u in average_updates
+                    )
+                    conn_tx.execute(text(f'''
+                        UPDATE "ranksAverage" ra
+                        SET "stateRank" = updates."stateRank"
+                        FROM (
+                            VALUES {average_values}
+                        ) AS updates("personId", "eventId", "stateRank")
+                        WHERE ra."personId" = updates."personId"
+                        AND ra."eventId" = updates."eventId"
+                    '''))
+
         log.info("State rankings updated successfully")
         return jsonify({"success": True, "message": "State rankings updated successfully"})
     except Exception as e:
