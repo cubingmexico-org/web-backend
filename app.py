@@ -318,8 +318,8 @@ def update_state_ranks():
     try:
         with engine.begin() as conn:
             # Reset stateRank values
-            conn.execute(text("""UPDATE "rankSingle" SET stateRank = NULL"""))
-            conn.execute(text("""UPDATE "rankAverage" SET stateRank = NULL"""))
+            conn.execute(text("""UPDATE "ranksSingle" SET stateRank = NULL"""))
+            conn.execute(text("""UPDATE "ranksAverage" SET stateRank = NULL"""))
             
             # Fetch all states
             states = conn.execute(text("SELECT id, name FROM states")).fetchall()
@@ -342,10 +342,10 @@ def update_state_ranks():
             for state_row in states:
                 state_name = state_row.name
                 for event_row in events:
-                    # Process rankSingle updates
+                    # Process ranksSingle updates
                     single_data = conn.execute(text("""
                         SELECT rs."personId", rs."eventId"
-                        FROM "rankSingle" rs
+                        FROM "ranksSingle" rs
                         INNER JOIN persons p ON rs."personId" = p.id
                         LEFT JOIN states st ON p."stateId" = st.id
                         WHERE rs."countryRank" <> 0
@@ -363,10 +363,10 @@ def update_state_ranks():
                         })
                         single_state_rank += 1
 
-                    # Process rankAverage updates
+                    # Process ranksAverage updates
                     average_data = conn.execute(text("""
                         SELECT ra."personId", ra."eventId"
-                        FROM "rankAverage" ra
+                        FROM "ranksAverage" ra
                         INNER JOIN persons p ON ra."personId" = p.id
                         LEFT JOIN states st ON p."stateId" = st.id
                         WHERE ra."countryRank" <> 0
@@ -388,13 +388,13 @@ def update_state_ranks():
             with engine.begin() as conn_tx:
                 for update in single_updates:
                     conn_tx.execute(text("""
-                        UPDATE "rankSingle" 
+                        UPDATE "ranksSingle" 
                         SET "stateRank" = :stateRank 
                         WHERE "personId" = :personId AND "eventId" = :eventId
                     """), update)
                 for update in average_updates:
                     conn_tx.execute(text("""
-                        UPDATE "rankAverage" 
+                        UPDATE "ranksAverage" 
                         SET "stateRank" = :stateRank 
                         WHERE "personId" = :personId AND "eventId" = :eventId
                     """), update)
