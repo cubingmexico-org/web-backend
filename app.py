@@ -318,8 +318,8 @@ def update_state_ranks():
     try:
         with engine.begin() as conn:
             # Reset stateRank values
-            conn.execute(text("""UPDATE "ranksSingle" SET stateRank = NULL"""))
-            conn.execute(text("""UPDATE "ranksAverage" SET stateRank = NULL"""))
+            conn.execute(text("""UPDATE "ranksSingle" SET "stateRank" = NULL"""))
+            conn.execute(text("""UPDATE "ranksAverage" SET "stateRank" = NULL"""))
             
             # Fetch all states
             states = conn.execute(text("SELECT id, name FROM states")).fetchall()
