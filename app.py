@@ -318,8 +318,8 @@ def update_state_ranks():
     try:
         with engine.begin() as conn:
             # Reset stateRank values
-            conn.execute(text("UPDATE rankSingle SET stateRank = NULL"))
-            conn.execute(text("UPDATE rankAverage SET stateRank = NULL"))
+            conn.execute(text("""UPDATE "rankSingle" SET stateRank = NULL"""))
+            conn.execute(text("""UPDATE "rankAverage" SET stateRank = NULL"""))
             
             # Fetch all states
             states = conn.execute(text("SELECT id, name FROM states")).fetchall()
@@ -344,14 +344,14 @@ def update_state_ranks():
                 for event_row in events:
                     # Process rankSingle updates
                     single_data = conn.execute(text("""
-                        SELECT rs.personId, rs.eventId
-                        FROM rankSingle rs
-                        INNER JOIN persons p ON rs.personId = p.id
-                        LEFT JOIN states st ON p.stateId = st.id
-                        WHERE rs.countryRank <> 0
-                          AND rs.eventId = :event_id
+                        SELECT rs."personId", rs."eventId"
+                        FROM "rankSingle" rs
+                        INNER JOIN persons p ON rs."personId" = p.id
+                        LEFT JOIN states st ON p."stateId" = st.id
+                        WHERE rs."countryRank" <> 0
+                          AND rs."eventId" = :event_id
                           AND st.name = :state_name
-                        ORDER BY rs.countryRank ASC
+                        ORDER BY rs."countryRank" ASC
                     """), {"event_id": event_row.id, "state_name": state_name}).fetchall()
 
                     single_state_rank = 1
@@ -365,14 +365,14 @@ def update_state_ranks():
 
                     # Process rankAverage updates
                     average_data = conn.execute(text("""
-                        SELECT ra.personId, ra.eventId
-                        FROM rankAverage ra
-                        INNER JOIN persons p ON ra.personId = p.id
-                        LEFT JOIN states st ON p.stateId = st.id
-                        WHERE ra.countryRank <> 0
-                          AND ra.eventId = :event_id
+                        SELECT ra."personId", ra."eventId"
+                        FROM "rankAverage" ra
+                        INNER JOIN persons p ON ra."personId" = p.id
+                        LEFT JOIN states st ON p."stateId" = st.id
+                        WHERE ra."countryRank" <> 0
+                          AND ra."eventId" = :event_id
                           AND st.name = :state_name
-                        ORDER BY ra.countryRank ASC
+                        ORDER BY ra."countryRank" ASC
                     """), {"event_id": event_row.id, "state_name": state_name}).fetchall()
 
                     average_state_rank = 1
@@ -388,15 +388,15 @@ def update_state_ranks():
             with engine.begin() as conn_tx:
                 for update in single_updates:
                     conn_tx.execute(text("""
-                        UPDATE rankSingle 
-                        SET stateRank = :stateRank 
-                        WHERE personId = :personId AND eventId = :eventId
+                        UPDATE "rankSingle" 
+                        SET "stateRank" = :stateRank 
+                        WHERE "personId" = :personId AND "eventId" = :eventId
                     """), update)
                 for update in average_updates:
                     conn_tx.execute(text("""
-                        UPDATE rankAverage 
-                        SET stateRank = :stateRank 
-                        WHERE personId = :personId AND eventId = :eventId
+                        UPDATE "rankAverage" 
+                        SET "stateRank" = :stateRank 
+                        WHERE "personId" = :personId AND "eventId" = :eventId
                     """), update)
         log.info("State rankings updated successfully")
         return jsonify({"success": True, "message": "State rankings updated successfully"})
