@@ -1,3 +1,5 @@
+import psycopg2
+import psycopg2.extras
 import re
 import io
 import zipfile
@@ -6,7 +8,6 @@ import logging
 import pandas as pd
 from datetime import datetime
 from flask import Flask, jsonify, request
-from sqlalchemy import create_engine, text
 from google.cloud import secretmanager
 import os
 from utils import get_state_from_coordinates
@@ -21,7 +22,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
-
 log = logging.getLogger(__name__)
 
 def get_secret(secret_id, project_id, version_id="latest"):
@@ -32,7 +32,9 @@ def get_secret(secret_id, project_id, version_id="latest"):
 
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "cubing-mexico")
 DB_URL = get_secret("db_url", GCP_PROJECT_ID)
-engine = create_engine(DB_URL)
+
+def get_connection():
+    return psycopg2.connect(DB_URL)
 
 @app.route("/update-database", methods=["POST"])
 def update_full_database():
@@ -47,221 +49,264 @@ def update_full_database():
     try:
         with zipfile.ZipFile(zip_bytes, "r") as z:
             for file_name in z.namelist():
-                # Process Competitions file
                 if file_name == "WCA_export_Competitions.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
                     cleaned_content = file_content.replace('"', '')
-                    df = pd.read_csv(io.StringIO(cleaned_content),
-                                     delimiter="\t", 
-                                     na_values=["NULL"])
+                    df = pd.read_csv(io.StringIO(cleaned_content), delimiter="\t", na_values=["NULL"])
                     competitions = df.to_dict(orient="records")
-                    with engine.begin() as conn:
-                        states = conn.execute(text("SELECT * FROM states")).fetchall()
-                        delegates = conn.execute(text("SELECT id FROM delegates")).fetchall()
-                        organisers = conn.execute(text("SELECT id FROM organisers")).fetchall()
-                        existing = conn.execute(text("SELECT id FROM competitions")).fetchall()
-                        existing_ids = {row.id for row in existing}
-                        for row in competitions:
-                            if row["id"] in existing_ids:
-                                continue
-                            state_id = None
-                            if row["countryId"] == "Mexico":
-                                state_name = get_state_from_coordinates(row["latitude"] / 1000000,
-                                                                       row["longitude"] / 1000000)
-                                if state_name:
-                                    for s in states:
-                                        if s.name == state_name:
-                                            state_id = s.id
-                                            break
-                            start_date = datetime(row["year"], row["month"], row["day"])
-                            end_date = datetime(row["year"], row["endMonth"], row["endDay"])
-                            conn.execute(text("""
-                                INSERT INTO competitions 
-                                (id, name, "cityName", "countryId", information, "startDate", "endDate", cancelled, venue, "venueAddress", "venueDetails", external_website, "cellName", latitude, longitude, "stateId")
-                                VALUES (:id, :name, :cityName, :countryId, :information, :startDate, :endDate, :cancelled, :venue, :venueAddress, :venueDetails, :external_website, :cellName, :latitude, :longitude, :stateId)
-                                ON CONFLICT DO NOTHING
-                            """), {
-                                "id": row["id"],
-                                "name": row["name"],
-                                "cityName": row["cityName"],
-                                "countryId": row["countryId"],
-                                "information": row["information"],
-                                "startDate": start_date,
-                                "endDate": end_date,
-                                "cancelled": row["cancelled"],
-                                "venue": row["venue"],
-                                "venueAddress": row["venueAddress"],
-                                "venueDetails": row["venueDetails"],
-                                "external_website": row["external_website"],
-                                "cellName": row["cellName"],
-                                "latitude": row["latitude"],
-                                "longitude": row["longitude"],
-                                "stateId": state_id
-                            })
-                            if row["countryId"] == "Mexico":
-                                # Process eventSpecs into competitionEvent table
-                                for event_spec in str(row["eventSpecs"]).split():
-                                    conn.execute(text("""
-                                        INSERT INTO competition_events (competitionId, eventId)
-                                        VALUES (:competitionId, :eventId)
-                                        ON CONFLICT DO NOTHING
-                                    """), {
-                                        "competitionId": row["id"],
-                                        "eventId": event_spec
-                                    })
-                                # Process organiser information using regex
-                                organiser_pattern = re.compile(r"\{([^}]+)\}\{mailto:([^}]+)\}")
-                                for match in organiser_pattern.finditer(str(row["organiser"])):
-                                    organiser_name = match.group(1)
-                                    organiser_email = match.group(2)
-                                    exists = any(o.id == organiser_email for o in organisers)
-                                    person_res = conn.execute(text("""
-                                        SELECT id FROM persons WHERE name = :name
-                                    """), {"name": organiser_name}).fetchone()
-                                    person_id = person_res.id if person_res else None
-                                    if not exists:
-                                        conn.execute(text("""
-                                            INSERT INTO organisers (id, "personId", status)
-                                            VALUES (:id, :personId, 'active')
+                    with get_connection() as conn:
+                        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                            cur.execute("SELECT * FROM states")
+                            states = cur.fetchall()
+
+                            cur.execute("SELECT id FROM delegates")
+                            delegates = cur.fetchall()
+
+                            cur.execute("SELECT id FROM organisers")
+                            organisers = cur.fetchall()
+
+                            cur.execute("SELECT id FROM competitions")
+                            existing = cur.fetchall()
+                            existing_ids = {row.id for row in existing}
+
+                            for row in competitions:
+                                if row["id"] in existing_ids:
+                                    continue
+                                state_id = None
+                                if row["countryId"] == "Mexico":
+                                    state_name = get_state_from_coordinates(
+                                        row["latitude"] / 1000000,
+                                        row["longitude"] / 1000000
+                                    )
+                                    if state_name:
+                                        for s in states:
+                                            if s.name == state_name:
+                                                state_id = s.id
+                                                break
+                                start_date = datetime(row["year"], row["month"], row["day"])
+                                end_date = datetime(row["year"], row["endMonth"], row["endDay"])
+                                cur.execute(
+                                    """
+                                    INSERT INTO competitions 
+                                    (id, name, "cityName", "countryId", information, "startDate", "endDate", cancelled,
+                                     venue, "venueAddress", "venueDetails", external_website, "cellName",
+                                     latitude, longitude, "stateId")
+                                    VALUES (%(id)s, %(name)s, %(cityName)s, %(countryId)s, %(information)s,
+                                            %(startDate)s, %(endDate)s, %(cancelled)s, %(venue)s,
+                                            %(venueAddress)s, %(venueDetails)s, %(external_website)s,
+                                            %(cellName)s, %(latitude)s, %(longitude)s, %(stateId)s)
+                                    ON CONFLICT DO NOTHING
+                                    """,
+                                    {
+                                        "id": row["id"],
+                                        "name": row["name"],
+                                        "cityName": row["cityName"],
+                                        "countryId": row["countryId"],
+                                        "information": row["information"],
+                                        "startDate": start_date,
+                                        "endDate": end_date,
+                                        "cancelled": row["cancelled"],
+                                        "venue": row["venue"],
+                                        "venueAddress": row["venueAddress"],
+                                        "venueDetails": row["venueDetails"],
+                                        "external_website": row["external_website"],
+                                        "cellName": row["cellName"],
+                                        "latitude": row["latitude"],
+                                        "longitude": row["longitude"],
+                                        "stateId": state_id
+                                    }
+                                )
+                                if row["countryId"] == "Mexico":
+                                    # competition_events
+                                    for event_spec in str(row["eventSpecs"]).split():
+                                        cur.execute(
+                                            """
+                                            INSERT INTO competition_events (competitionId, eventId)
+                                            VALUES (%(competitionId)s, %(eventId)s)
                                             ON CONFLICT DO NOTHING
-                                        """), {"id": organiser_email, "personId": person_id})
-                                    conn.execute(text("""
-                                        INSERT INTO competition_organisers ("competitionId", "organiserId")
-                                        VALUES (:competitionId, :organiserId)
-                                        ON CONFLICT DO NOTHING
-                                    """), {"competitionId": row["id"], "organiserId": organiser_email})
-                                # Process delegate information using regex
-                                delegate_pattern = re.compile(r"\{([^}]+)\}\{mailto:([^}]+)\}")
-                                for match in delegate_pattern.finditer(str(row["wcaDelegate"])):
-                                    delegate_name = match.group(1)
-                                    delegate_email = match.group(2)
-                                    exists = any(d.id == delegate_email for d in delegates)
-                                    person_res = conn.execute(text("""
-                                        SELECT id FROM persons WHERE name = :name
-                                    """), {"name": delegate_name}).fetchone()
-                                    person_id = person_res.id if person_res else None
-                                    if not exists and person_id:
-                                        conn.execute(text("""
-                                            INSERT INTO delegates (id, "personId", status)
-                                            VALUES (:id, :personId, 'active')
+                                            """,
+                                            {
+                                                "competitionId": row["id"],
+                                                "eventId": event_spec
+                                            }
+                                        )
+                                    # organisers
+                                    organiser_pattern = re.compile(r"\{([^}]+)\}\{mailto:([^}]+)\}")
+                                    for match in organiser_pattern.finditer(str(row["organiser"])):
+                                        organiser_name = match.group(1)
+                                        organiser_email = match.group(2)
+                                        exists = any(o.id == organiser_email for o in organisers)
+                                        cur.execute(
+                                            "SELECT id FROM persons WHERE name = %s",
+                                            (organiser_name,)
+                                        )
+                                        person_res = cur.fetchone()
+                                        person_id = person_res.id if person_res else None
+                                        if not exists:
+                                            cur.execute(
+                                                """
+                                                INSERT INTO organisers (id, "personId", status)
+                                                VALUES (%(id)s, %(personId)s, 'active')
+                                                ON CONFLICT DO NOTHING
+                                                """,
+                                                {"id": organiser_email, "personId": person_id}
+                                            )
+                                        cur.execute(
+                                            """
+                                            INSERT INTO competition_organisers ("competitionId", "organiserId")
+                                            VALUES (%(competitionId)s, %(organiserId)s)
                                             ON CONFLICT DO NOTHING
-                                        """), {"id": delegate_email, "personId": person_id})
-                                    if exists or person_id:
-                                        conn.execute(text("""
-                                            INSERT INTO competition_delegates ("competitionId", "delegateId")
-                                            VALUES (:competitionId, :delegateId)
-                                            ON CONFLICT DO NOTHING
-                                        """), {"competitionId": row["id"], "delegateId": delegate_email})
-                # Process Events file
+                                            """,
+                                            {
+                                                "competitionId": row["id"],
+                                                "organiserId": organiser_email
+                                            }
+                                        )
+                                    # delegates
+                                    delegate_pattern = re.compile(r"\{([^}]+)\}\{mailto:([^}]+)\}")
+                                    for match in delegate_pattern.finditer(str(row["wcaDelegate"])):
+                                        delegate_name = match.group(1)
+                                        delegate_email = match.group(2)
+                                        exists = any(d.id == delegate_email for d in delegates)
+                                        cur.execute(
+                                            "SELECT id FROM persons WHERE name = %s",
+                                            (delegate_name,)
+                                        )
+                                        person_res = cur.fetchone()
+                                        person_id = person_res.id if person_res else None
+                                        if not exists and person_id:
+                                            cur.execute(
+                                                """
+                                                INSERT INTO delegates (id, "personId", status)
+                                                VALUES (%(id)s, %(personId)s, 'active')
+                                                ON CONFLICT DO NOTHING
+                                                """,
+                                                {"id": delegate_email, "personId": person_id}
+                                            )
+                                        if exists or person_id:
+                                            cur.execute(
+                                                """
+                                                INSERT INTO competition_delegates ("competitionId", "delegateId")
+                                                VALUES (%(competitionId)s, %(delegateId)s)
+                                                ON CONFLICT DO NOTHING
+                                                """,
+                                                {
+                                                    "competitionId": row["id"],
+                                                    "delegateId": delegate_email
+                                                }
+                                            )
+
                 elif file_name == "WCA_export_Events.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
                     df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True)
                     events = df.to_dict(orient="records")
-                    with engine.begin() as conn:
-                        for row in events:
-                            conn.execute(text("""
-                                INSERT INTO events (id, format, name, rank, "cellName")
-                                VALUES (:id, :format, :name, :rank, :cellName)
-                                ON CONFLICT DO NOTHING
-                            """), {
-                                "id": row["id"],
-                                "format": row["format"],
-                                "name": row["name"],
-                                "rank": row["rank"],
-                                "cellName": row["cellName"]
-                            })
-                # Process Persons file
+                    with get_connection() as conn:
+                        with conn.cursor() as cur:
+                            for row in events:
+                                cur.execute(
+                                    """
+                                    INSERT INTO events (id, format, name, rank, "cellName")
+                                    VALUES (%(id)s, %(format)s, %(name)s, %(rank)s, %(cellName)s)
+                                    ON CONFLICT DO NOTHING
+                                    """,
+                                    {
+                                        "id": row["id"],
+                                        "format": row["format"],
+                                        "name": row["name"],
+                                        "rank": row["rank"],
+                                        "cellName": row["cellName"]
+                                    }
+                                )
+
                 elif file_name == "WCA_export_Persons.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
-                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True, na_values=["NULL"])
+                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t",
+                                     skip_blank_lines=True, na_values=["NULL"])
                     persons = df.to_dict(orient="records")
                     cleaned_persons = []
                     for p in persons:
                         if p["countryId"] == "Mexico":
                             gender = p.get("gender")
-                            # pandas NaN becomes None, valid genders stay as 1-char strings
                             gender = None if pd.isna(gender) else str(gender)
                             cleaned_persons.append({
                                 "id": p["id"],
                                 "name": p["name"],
                                 "gender": gender
                             })
-                    with engine.begin() as conn:
-                        for row in cleaned_persons:
-                            conn.execute(text("""
-                                INSERT INTO persons (id, name, gender)
-                                VALUES (:id, :name, :gender)
-                                ON CONFLICT DO NOTHING
-                            """), {
-                                "id": row["id"],
-                                "name": row["name"],
-                                "gender": row["gender"]
-                            })
-                # Process RanksAverage file
+                    with get_connection() as conn:
+                        with conn.cursor() as cur:
+                            for row in cleaned_persons:
+                                cur.execute(
+                                    """
+                                    INSERT INTO persons (id, name, gender)
+                                    VALUES (%(id)s, %(name)s, %(gender)s)
+                                    ON CONFLICT DO NOTHING
+                                    """,
+                                    row
+                                )
+
                 elif file_name == "WCA_export_RanksAverage.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
-                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True, low_memory=False)
+                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t",
+                                     skip_blank_lines=True, low_memory=False)
                     data = df.to_dict(orient="records")
-                    # Fetch person ids from DB
-                    with engine.begin() as conn:
-                        persons = conn.execute(text("SELECT id FROM persons")).fetchall()
-                        person_ids = {p.id for p in persons}
-                        filtered = [d for d in data if d["personId"] in person_ids]
-                        conn.execute(text("""
-                            DELETE FROM "ranksAverage"
-                        """))
-                        for row in filtered:
-                            conn.execute(text("""
-                                INSERT INTO "ranksAverage" ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
-                                VALUES (:personId, :eventId, :best, :worldRank, :continentRank, :countryRank)
-                                ON CONFLICT DO NOTHING
-                            """), {
-                                "personId": row["personId"],
-                                "eventId": row["eventId"],
-                                "best": row["best"],
-                                "worldRank": row["worldRank"],
-                                "continentRank": row["continentRank"],
-                                "countryRank": row["countryRank"]
-                            })
-                # Process RanksSingle file
+                    with get_connection() as conn:
+                        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                            cur.execute("SELECT id FROM persons")
+                            persons = cur.fetchall()
+                            person_ids = {p.id for p in persons}
+                            filtered = [d for d in data if d["personId"] in person_ids]
+                            cur.execute('DELETE FROM "ranksAverage"')
+                            for row in filtered:
+                                cur.execute(
+                                    """
+                                    INSERT INTO "ranksAverage"
+                                    ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
+                                    VALUES (%(personId)s, %(eventId)s, %(best)s, %(worldRank)s,
+                                            %(continentRank)s, %(countryRank)s)
+                                    ON CONFLICT DO NOTHING
+                                    """,
+                                    row
+                                )
+
                 elif file_name == "WCA_export_RanksSingle.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
-                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t", skip_blank_lines=True, low_memory=False)
+                    df = pd.read_csv(io.StringIO(file_content), delimiter="\t",
+                                     skip_blank_lines=True, low_memory=False)
                     data = df.to_dict(orient="records")
-                    with engine.begin() as conn:
-                        persons = conn.execute(text("SELECT id FROM persons")).fetchall()
-                        person_ids = {p.id for p in persons}
-                        filtered = [d for d in data if d["personId"] in person_ids]
-                        conn.execute(text("""
-                            DELETE FROM "ranksSingle"
-                        """))
-                        for row in filtered:
-                            conn.execute(text("""
-                                INSERT INTO "ranksSingle" ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
-                                VALUES (:personId, :eventId, :best, :worldRank, :continentRank, :countryRank)
-                                ON CONFLICT DO NOTHING
-                            """), {
-                                "personId": row["personId"],
-                                "eventId": row["eventId"],
-                                "best": row["best"],
-                                "worldRank": row["worldRank"],
-                                "continentRank": row["continentRank"],
-                                "countryRank": row["countryRank"]
-                            })
-                # Process Results file
+                    with get_connection() as conn:
+                        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                            cur.execute("SELECT id FROM persons")
+                            persons = cur.fetchall()
+                            person_ids = {p.id for p in persons}
+                            filtered = [d for d in data if d["personId"] in person_ids]
+                            cur.execute('DELETE FROM "ranksSingle"')
+                            for row in filtered:
+                                cur.execute(
+                                    """
+                                    INSERT INTO "ranksSingle"
+                                    ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
+                                    VALUES (%(personId)s, %(eventId)s, %(best)s, %(worldRank)s,
+                                            %(continentRank)s, %(countryRank)s)
+                                    ON CONFLICT DO NOTHING
+                                    """,
+                                    row
+                                )
+
                 elif file_name == "WCA_export_Results.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_bytes = z.read(file_name)
                     chunk_size = 10_000_000
-                    total_chunks = -(-len(file_bytes) // chunk_size)  # ceiling division
+                    total_chunks = -(-len(file_bytes) // chunk_size)
                     headers = None
-                    with engine.begin() as conn:
-                        conn.execute(text("DELETE FROM results"))
+                    with get_connection() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute('DELETE FROM results')
                         for i in range(total_chunks):
                             start = i * chunk_size
                             end = (i + 1) * chunk_size
@@ -284,29 +329,23 @@ def update_full_database():
                                 low_memory=False
                             )
                             df_filtered = df_chunk[df_chunk["personCountryId"] == "Mexico"]
-                            for _, row in df_filtered.iterrows():
-                                conn.execute(text("""
-                                    INSERT INTO results 
-                                    ("competitionId", "eventId", "roundTypeId", pos, best, average, "personId", "formatId", value1, value2, value3, value4, value5, "regionalSingleRecord", "regionalAverageRecord")
-                                    VALUES (:competitionId, :eventId, :roundTypeId, :pos, :best, :average, :personId, :formatId, :value1, :value2, :value3, :value4, :value5, :regionalSingleRecord, :regionalAverageRecord)
-                                    ON CONFLICT DO NOTHING
-                                """), {
-                                    "competitionId": row["competitionId"],
-                                    "eventId": row["eventId"],
-                                    "roundTypeId": row["roundTypeId"],
-                                    "pos": row["pos"],
-                                    "best": row["best"],
-                                    "average": row["average"],
-                                    "personId": row["personId"],
-                                    "formatId": row["formatId"],
-                                    "value1": row["value1"],
-                                    "value2": row["value2"],
-                                    "value3": row["value3"],
-                                    "value4": row["value4"],
-                                    "value5": row["value5"],
-                                    "regionalSingleRecord": row["regionalSingleRecord"],
-                                    "regionalAverageRecord": row["regionalAverageRecord"]
-                                })
+                            with get_connection() as conn:
+                                with conn.cursor() as cur:
+                                    for _, rowdata in df_filtered.iterrows():
+                                        cur.execute(
+                                            """
+                                            INSERT INTO results
+                                            ("competitionId", "eventId", "roundTypeId", pos, best, average,
+                                             "personId", "formatId", value1, value2, value3, value4, value5,
+                                             "regionalSingleRecord", "regionalAverageRecord")
+                                            VALUES (%(competitionId)s, %(eventId)s, %(roundTypeId)s, %(pos)s,
+                                                    %(best)s, %(average)s, %(personId)s, %(formatId)s,
+                                                    %(value1)s, %(value2)s, %(value3)s, %(value4)s, %(value5)s,
+                                                    %(regionalSingleRecord)s, %(regionalAverageRecord)s)
+                                            ON CONFLICT DO NOTHING
+                                            """,
+                                            rowdata.to_dict()
+                                        )
         log.info("Database updated successfully")
         return jsonify({"success": True, "message": "Database updated successfully"})
     except Exception as e:
@@ -316,114 +355,131 @@ def update_full_database():
 @app.route("/update-state-ranks", methods=["POST"])
 def update_state_ranks():
     try:
-        with engine.begin() as conn:
-            # Reset stateRank values
-            conn.execute(text("""UPDATE "ranksSingle" SET "stateRank" = NULL"""))
-            conn.execute(text("""UPDATE "ranksAverage" SET "stateRank" = NULL"""))
-            log.info("State ranks reset for ranksSingle and ranksAverage")
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                # Reset stateRank values
+                cur.execute('UPDATE "ranksSingle" SET "stateRank" = NULL')
+                cur.execute('UPDATE "ranksAverage" SET "stateRank" = NULL')
+                log.info("State ranks reset for ranksSingle and ranksAverage")
 
-            # Fetch all states
-            states = conn.execute(text("SELECT id, name FROM states")).fetchall()
-            log.info(f"Fetched {len(states)} states")
+                # Fetch all states
+                cur.execute('SELECT id, name FROM states')
+                states = cur.fetchall()
+                log.info(f"Fetched {len(states)} states")
 
-            # Fetch events excluding EXCLUDED_EVENTS
-            # Use a tuple for parameter binding; if empty, fetch all events.
-            if EXCLUDED_EVENTS:
-                events = conn.execute(
-                    text("SELECT id FROM events WHERE id NOT IN :excluded")
-                    .bindparams(excluded=tuple(EXCLUDED_EVENTS))
-                ).fetchall()
-            else:
-                events = conn.execute(text("SELECT id FROM events")).fetchall()
-            log.info(f"Fetched {len(events)} events (excluded: {EXCLUDED_EVENTS})")
+                # Fetch events excluding EXCLUDED_EVENTS
+                if EXCLUDED_EVENTS:
+                    placeholders = ",".join(["%s"] * len(EXCLUDED_EVENTS))
+                    query = f'SELECT id FROM events WHERE id NOT IN ({placeholders})'
+                    cur.execute(query, EXCLUDED_EVENTS)
+                else:
+                    cur.execute('SELECT id FROM events')
+                events = cur.fetchall()
+                log.info(f"Fetched {len(events)} events (excluded: {EXCLUDED_EVENTS})")
 
-            # Prepare lists to hold update data for single and average ranks
-            single_updates = []
-            average_updates = []
-            log.info("Starting computation of stateRank values for each state and event")
+                single_updates = []
+                average_updates = []
+                log.info("Starting computation of stateRank values for each state and event")
 
-            # Loop through each state and event
-            for state_row in states:
-                log.info(f"Processing state: {state_row.name}")
-                state_name = state_row.name
-                for event_row in events:
-                    log.info(f"  - Event: {event_row.id}")
-                    # Process ranksSingle updates
-                    single_data = conn.execute(text("""
-                        SELECT rs."personId", rs."eventId"
-                        FROM "ranksSingle" rs
-                        INNER JOIN persons p ON rs."personId" = p.id
-                        LEFT JOIN states st ON p."stateId" = st.id
-                        WHERE rs."countryRank" <> 0
-                          AND rs."eventId" = :event_id
-                          AND st.name = :state_name
-                        ORDER BY rs."countryRank" ASC
-                    """), {"event_id": event_row.id, "state_name": state_name}).fetchall()
+                for state_row in states:
+                    state_name = state_row.name
+                    log.info(f"Processing state: {state_name}")
 
-                    single_state_rank = 1
-                    for record in single_data:
-                        single_updates.append({
-                            "personId": record.personId,
-                            "eventId": record.eventId,
-                            "stateRank": single_state_rank
-                        })
-                        single_state_rank += 1
+                    for event_row in events:
+                        log.info(f"  - Event: {event_row.id}")
 
-                    # Process ranksAverage updates
-                    average_data = conn.execute(text("""
-                        SELECT ra."personId", ra."eventId"
-                        FROM "ranksAverage" ra
-                        INNER JOIN persons p ON ra."personId" = p.id
-                        LEFT JOIN states st ON p."stateId" = st.id
-                        WHERE ra."countryRank" <> 0
-                          AND ra."eventId" = :event_id
-                          AND st.name = :state_name
-                        ORDER BY ra."countryRank" ASC
-                    """), {"event_id": event_row.id, "state_name": state_name}).fetchall()
+                        # ranksSingle
+                        cur.execute(
+                            """
+                            SELECT rs."personId", rs."eventId"
+                            FROM "ranksSingle" rs
+                            INNER JOIN persons p ON rs."personId" = p.id
+                            LEFT JOIN states st ON p."stateId" = st.id
+                            WHERE rs."countryRank" <> 0
+                              AND rs."eventId" = %s
+                              AND st.name = %s
+                            ORDER BY rs."countryRank" ASC
+                            """,
+                            (event_row.id, state_name)
+                        )
+                        single_data = cur.fetchall()
 
-                    average_state_rank = 1
-                    for record in average_data:
-                        average_updates.append({
-                            "personId": record.personId,
-                            "eventId": record.eventId,
-                            "stateRank": average_state_rank
-                        })
-                        average_state_rank += 1
+                        single_state_rank = 1
+                        for record in single_data:
+                            single_updates.append({
+                                "personId": record.personId,
+                                "eventId": record.eventId,
+                                "stateRank": single_state_rank
+                            })
+                            single_state_rank += 1
 
-            log.info(f"Computed {len(single_updates)} single_updates and {len(average_updates)} average_updates")
+                        # ranksAverage
+                        cur.execute(
+                            """
+                            SELECT ra."personId", ra."eventId"
+                            FROM "ranksAverage" ra
+                            INNER JOIN persons p ON ra."personId" = p.id
+                            LEFT JOIN states st ON p."stateId" = st.id
+                            WHERE ra."countryRank" <> 0
+                              AND ra."eventId" = %s
+                              AND st.name = %s
+                            ORDER BY ra."countryRank" ASC
+                            """,
+                            (event_row.id, state_name)
+                        )
+                        average_data = cur.fetchall()
 
-            # Execute updates in a transaction
-            with engine.begin() as conn_tx:
-                log.info("Applying single stateRank updates")
-                if single_updates:
-                    single_values = ", ".join(
-                        f"('{u['personId']}', '{u['eventId']}', {u['stateRank']})"
-                        for u in single_updates
-                    )
-                    conn_tx.execute(text(f'''
-                        UPDATE "ranksSingle" rs
-                        SET "stateRank" = updates."stateRank"
-                        FROM (
-                            VALUES {single_values}
-                        ) AS updates("personId", "eventId", "stateRank")
-                        WHERE rs."personId" = updates."personId"
-                        AND rs."eventId" = updates."eventId"
-                    '''))
-                log.info("Applying average stateRank updates")
-                if average_updates:
-                    average_values = ", ".join(
-                        f"('{u['personId']}', '{u['eventId']}', {u['stateRank']})"
-                        for u in average_updates
-                    )
-                    conn_tx.execute(text(f'''
-                        UPDATE "ranksAverage" ra
-                        SET "stateRank" = updates."stateRank"
-                        FROM (
-                            VALUES {average_values}
-                        ) AS updates("personId", "eventId", "stateRank")
-                        WHERE ra."personId" = updates."personId"
-                        AND ra."eventId" = updates."eventId"
-                    '''))
+                        average_state_rank = 1
+                        for record in average_data:
+                            average_updates.append({
+                                "personId": record.personId,
+                                "eventId": record.eventId,
+                                "stateRank": average_state_rank
+                            })
+                            average_state_rank += 1
+
+                log.info(f"Computed {len(single_updates)} single_updates and {len(average_updates)} average_updates")
+
+        # Apply updates in one transaction
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Create temp table
+                cur.execute('CREATE TEMP TABLE tmp_updates (personId text, eventId text, stateRank int)')
+
+                # Insert data in bulk
+                psycopg2.extras.execute_values(
+                    cur,
+                    'INSERT INTO tmp_updates (personId, eventId, stateRank) VALUES %s',
+                    [(u["personId"], u["eventId"], u["stateRank"]) for u in single_updates]
+                )
+
+                # Perform update
+                cur.execute('''
+                    UPDATE "ranksSingle" rs
+                    SET "stateRank" = tmp_updates.stateRank
+                    FROM tmp_updates
+                    WHERE rs."personId" = tmp_updates.personId
+                    AND rs."eventId" = tmp_updates.eventId
+                ''')
+                
+                # Create temp table
+                cur.execute('CREATE TEMP TABLE tmp_avg_updates (personId text, eventId text, stateRank int)')
+
+                # Insert data in bulk
+                psycopg2.extras.execute_values(
+                    cur,
+                    'INSERT INTO tmp_avg_updates (personId, eventId, stateRank) VALUES %s',
+                    [(u["personId"], u["eventId"], u["stateRank"]) for u in average_updates]
+                )
+
+                # Perform update
+                cur.execute('''
+                    UPDATE "ranksAverage" ra
+                    SET "stateRank" = tmp_avg_updates.stateRank
+                    FROM tmp_avg_updates
+                    WHERE ra."personId" = tmp_avg_updates.personId
+                    AND ra."eventId" = tmp_avg_updates.eventId
+                ''')
 
         log.info("State rankings updated successfully")
         return jsonify({"success": True, "message": "State rankings updated successfully"})
@@ -434,10 +490,8 @@ def update_state_ranks():
 @app.route("/update-sum-of-ranks", methods=["POST"])
 def update_sum_of_ranks():
     try:
-        # Build a CSV string for the excluded events
         excluded = ",".join(f"'{e}'" for e in EXCLUDED_EVENTS)
 
-        # Query for single results
         single_query = f"""
         WITH "allEvents" AS (
           SELECT DISTINCT "eventId" FROM "ranksSingle"
@@ -465,8 +519,8 @@ def update_sum_of_ranks():
         LEFT JOIN "ranksSingle" rs 
             ON pe.id = rs."personId" AND pe."eventId" = rs."eventId"
         LEFT JOIN (
-          SELECT "eventId", MAX("countryRank") + 1 as "worstRank"
-          FROM public."ranksSingle"
+          SELECT "eventId", MAX("countryRank") + 1 AS "worstRank"
+          FROM "ranksSingle"
           GROUP BY "eventId"
         ) AS wr 
             ON wr."eventId" = pe."eventId"
@@ -474,7 +528,6 @@ def update_sum_of_ranks():
         ORDER BY overall
         """
 
-        # Query for average results
         average_query = f"""
         WITH "allEvents" AS (
           SELECT DISTINCT "eventId" FROM "ranksAverage"
@@ -502,8 +555,8 @@ def update_sum_of_ranks():
         LEFT JOIN "ranksAverage" ra 
             ON pe.id = ra."personId" AND pe."eventId" = ra."eventId"
         LEFT JOIN (
-          SELECT "eventId", MAX("countryRank") + 1 as "worstRank"
-          FROM public."ranksAverage"
+          SELECT "eventId", MAX("countryRank") + 1 AS "worstRank"
+          FROM "ranksAverage"
           GROUP BY "eventId"
         ) AS wr 
             ON wr."eventId" = pe."eventId"
@@ -511,39 +564,39 @@ def update_sum_of_ranks():
         ORDER BY overall
         """
 
-        # Process single results in a transaction
-        with engine.begin() as conn:
-            conn.execute(text("DELETE FROM sumOfRanks WHERE resultType = 'single'"))
-            result = conn.execute(text(single_query))
-            persons = result.fetchall()
-            for index, row in enumerate(persons):
-                conn.execute(text("""
-                    INSERT INTO sumOfRanks (rank, personId, resultType, overall, events)
-                    VALUES (:rank, :personId, :resultType, :overall, :events)
-                """), {
-                    "rank": index + 1,
-                    "personId": row.id,
-                    "resultType": "single",
-                    "overall": row.overall,
-                    "events": row.events
-                })
+        # Handle single results
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                cur.execute('DELETE FROM "sumOfRanks" WHERE "resultType" = %s', ('single',))
+                cur.execute(single_query)
+                persons = cur.fetchall()
+                rank = 1
+                for row in persons:
+                    cur.execute(
+                        """
+                        INSERT INTO "sumOfRanks" (rank, "personId", "resultType", overall, events)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (rank, row.id, 'single', row.overall, psycopg2.extras.Json(row.events))
+                    )
+                    rank += 1
 
-        # Process average results in a transaction
-        with engine.begin() as conn:
-            conn.execute(text("DELETE FROM sumOfRanks WHERE resultType = 'average'"))
-            result = conn.execute(text(average_query))
-            persons = result.fetchall()
-            for index, row in enumerate(persons):
-                conn.execute(text("""
-                    INSERT INTO sumOfRanks (rank, personId, resultType, overall, events)
-                    VALUES (:rank, :personId, :resultType, :overall, :events)
-                """), {
-                    "rank": index + 1,
-                    "personId": row.id,
-                    "resultType": "average",
-                    "overall": row.overall,
-                    "events": row.events
-                })
+        # Handle average results
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                cur.execute('DELETE FROM "sumOfRanks" WHERE "resultType" = %s', ('average',))
+                cur.execute(average_query)
+                persons = cur.fetchall()
+                rank = 1
+                for row in persons:
+                    cur.execute(
+                        """
+                        INSERT INTO "sumOfRanks" (rank, "personId", "resultType", overall, events)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (rank, row.id, 'average', row.overall, psycopg2.extras.Json(row.events))
+                    )
+                    rank += 1
 
         log.info("Sum of ranks updated successfully")
         return jsonify({"success": True, "message": "Sum of ranks updated successfully"})
@@ -606,21 +659,26 @@ def update_kinch_ranks():
             p."personId",
             e.id AS "eventId",
             MAX(
-              CASE 
-                WHEN e.id = '333mbf' THEN
-                  CASE 
-                    WHEN COALESCE(pr.personal_best, 0) != 0 THEN 
-                      ((99 - CAST(SUBSTRING(CAST(pr.personal_best AS TEXT), 1, 2) AS FLOAT) +
-                      (1 - (CAST(SUBSTRING(CAST(pr.personal_best AS TEXT), 3, 5) AS FLOAT) / 3600))) / 
-                      ((99 - CAST(SUBSTRING(CAST(nr.national_best AS TEXT), 1, 2) AS FLOAT)) +
-                      (1 - (CAST(SUBSTRING(CAST(nr.national_best AS TEXT), 3, 5) AS FLOAT) / 3600))) * 100
+                CASE
+                    WHEN e.id = '333mbf' THEN
+                    CASE
+                        WHEN COALESCE(pr.personal_best, 0) != 0 THEN 
+                        (
+                            (
+                            (99 - CAST(SUBSTRING(CAST(pr.personal_best AS TEXT), 1, 2) AS FLOAT))
+                            + (1 - (CAST(SUBSTRING(CAST(pr.personal_best AS TEXT), 3, 5) AS FLOAT) / 3600))
+                            )
+                            /
+                            (
+                            (99 - CAST(SUBSTRING(CAST(nr.national_best AS TEXT), 1, 2) AS FLOAT))
+                            + (1 - (CAST(SUBSTRING(CAST(nr.national_best AS TEXT), 3, 5) AS FLOAT) / 3600))
+                            )
+                        ) * 100
+                        ELSE 0
+                    END
                     ELSE 0
-                  END
-                WHEN COALESCE(pr.personal_best, 0) != 0 THEN 
-                  (nr.national_best / COALESCE(pr.personal_best, 0)::FLOAT) * 100
-                ELSE 0
-              END
-            ) AS best_ratio
+                END
+                ) AS best_ratio
           FROM Persons p
           CROSS JOIN Events e
           LEFT JOIN PersonalRecords pr ON p."personId" = pr."personId" AND e.id = pr."eventId"
@@ -641,23 +699,24 @@ def update_kinch_ranks():
         ORDER BY overall DESC;
         """
 
-        with engine.begin() as conn:
-            # Delete all existing kinchRanks records
-            conn.execute(text("DELETE FROM kinchRanks"))
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                # Delete existing kinchRanks records
+                cur.execute('DELETE FROM "kinchRanks"')
 
-            result = conn.execute(text(query))
-            persons = result.fetchall()
+                # Execute the main query
+                cur.execute(query)
+                persons = cur.fetchall()
 
-            for index, row in enumerate(persons):
-                conn.execute(text("""
-                    INSERT INTO kinchRanks (rank, personId, overall, events)
-                    VALUES (:rank, :personId, :overall, :events)
-                """), {
-                    "rank": index + 1,
-                    "personId": row.id,
-                    "overall": row.overall,
-                    "events": row.events
-                })
+                # Insert new results
+                for index, row in enumerate(persons):
+                    cur.execute(
+                        """
+                        INSERT INTO "kinchRanks" (rank, "personId", overall, events)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (index + 1, row.id, row.overall, psycopg2.extras.Json(row.events))
+                    )
 
         log.info("Kinch ranks updated successfully")
         return jsonify({"success": True, "message": "Kinch ranks updated successfully"})
