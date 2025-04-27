@@ -1,5 +1,6 @@
 import psycopg2
 import psycopg2.extras
+from psycopg2.extras import execute_values
 import re
 import io
 import zipfile
@@ -252,7 +253,7 @@ def update_full_database():
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
                     df = pd.read_csv(io.StringIO(file_content), delimiter="\t",
-                                     skip_blank_lines=True, low_memory=False)
+                                    skip_blank_lines=True, low_memory=False)
                     data = df.to_dict(orient="records")
                     with get_connection() as conn:
                         with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
@@ -261,23 +262,33 @@ def update_full_database():
                             person_ids = {p.id for p in persons}
                             filtered = [d for d in data if d["personId"] in person_ids]
                             cur.execute('DELETE FROM "ranksAverage"')
-                            for row in filtered:
-                                cur.execute(
-                                    """
-                                    INSERT INTO "ranksAverage"
-                                    ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
-                                    VALUES (%(personId)s, %(eventId)s, %(best)s, %(worldRank)s,
-                                            %(continentRank)s, %(countryRank)s)
-                                    ON CONFLICT DO NOTHING
-                                    """,
-                                    row
+
+                            # Prepare rows for batch insert
+                            rows_to_insert = [
+                                (
+                                    row["personId"], row["eventId"], row["best"], row["worldRank"],
+                                    row["continentRank"], row["countryRank"]
                                 )
+                                for row in filtered
+                            ]
+
+                            # Use execute_values for batch insert
+                            execute_values(
+                                cur,
+                                """
+                                INSERT INTO "ranksAverage"
+                                ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
+                                VALUES %s
+                                ON CONFLICT DO NOTHING
+                                """,
+                                rows_to_insert
+                            )
 
                 elif file_name == "WCA_export_RanksSingle.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
                     df = pd.read_csv(io.StringIO(file_content), delimiter="\t",
-                                     skip_blank_lines=True, low_memory=False)
+                                    skip_blank_lines=True, low_memory=False)
                     data = df.to_dict(orient="records")
                     with get_connection() as conn:
                         with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
@@ -286,17 +297,27 @@ def update_full_database():
                             person_ids = {p.id for p in persons}
                             filtered = [d for d in data if d["personId"] in person_ids]
                             cur.execute('DELETE FROM "ranksSingle"')
-                            for row in filtered:
-                                cur.execute(
-                                    """
-                                    INSERT INTO "ranksSingle"
-                                    ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
-                                    VALUES (%(personId)s, %(eventId)s, %(best)s, %(worldRank)s,
-                                            %(continentRank)s, %(countryRank)s)
-                                    ON CONFLICT DO NOTHING
-                                    """,
-                                    row
+
+                            # Prepare rows for batch insert
+                            rows_to_insert = [
+                                (
+                                    row["personId"], row["eventId"], row["best"], row["worldRank"],
+                                    row["continentRank"], row["countryRank"]
                                 )
+                                for row in filtered
+                            ]
+
+                            # Use execute_values for batch insert
+                            execute_values(
+                                cur,
+                                """
+                                INSERT INTO "ranksSingle"
+                                ("personId", "eventId", best, "worldRank", "continentRank", "countryRank")
+                                VALUES %s
+                                ON CONFLICT DO NOTHING
+                                """,
+                                rows_to_insert
+                            )
 
                 elif file_name == "WCA_export_Results.tsv":
                     log.info(f"Processing file: {file_name}")
@@ -306,7 +327,7 @@ def update_full_database():
                     headers = None
                     with get_connection() as conn:
                         with conn.cursor() as cur:
-                            cur.execute('DELETE FROM results')
+                            cur.execute('DELETE FROM results')  # Clear the table before inserting new data
                         for i in range(total_chunks):
                             start = i * chunk_size
                             end = (i + 1) * chunk_size
@@ -329,24 +350,34 @@ def update_full_database():
                                 low_memory=False
                             )
                             df_filtered = df_chunk[df_chunk["personCountryId"] == "Mexico"]
+
+                            # Prepare rows for batch insert
+                            rows_to_insert = [
+                                (
+                                    row["competitionId"], row["eventId"], row["roundTypeId"], row["pos"], row["best"],
+                                    row["average"], row["personId"], row["formatId"], row["value1"], row["value2"],
+                                    row["value3"], row["value4"], row["value5"], row["regionalSingleRecord"],
+                                    row["regionalAverageRecord"]
+                                )
+                                for _, row in df_filtered.iterrows()
+                            ]
+
+                            # Perform batch insert
                             with get_connection() as conn:
                                 with conn.cursor() as cur:
-                                    for _, rowdata in df_filtered.iterrows():
-                                        cur.execute(
-                                            """
-                                            INSERT INTO results
-                                            ("competitionId", "eventId", "roundTypeId", pos, best, average,
-                                             "personId", "formatId", value1, value2, value3, value4, value5,
-                                             "regionalSingleRecord", "regionalAverageRecord")
-                                            VALUES (%(competitionId)s, %(eventId)s, %(roundTypeId)s, %(pos)s,
-                                                    %(best)s, %(average)s, %(personId)s, %(formatId)s,
-                                                    %(value1)s, %(value2)s, %(value3)s, %(value4)s, %(value5)s,
-                                                    %(regionalSingleRecord)s, %(regionalAverageRecord)s)
-                                            ON CONFLICT DO NOTHING
-                                            """,
-                                            rowdata.to_dict()
-                                        )
-        log.info("Database updated successfully")
+                                    execute_values(
+                                        cur,
+                                        """
+                                        INSERT INTO results
+                                        ("competitionId", "eventId", "roundTypeId", pos, best, average,
+                                        "personId", "formatId", value1, value2, value3, value4, value5,
+                                        "regionalSingleRecord", "regionalAverageRecord")
+                                        VALUES %s
+                                        ON CONFLICT DO NOTHING
+                                        """,
+                                        rows_to_insert
+                                    )
+                        log.info("Database updated successfully")
         return jsonify({"success": True, "message": "Database updated successfully"})
     except Exception as e:
         log.error(e)
