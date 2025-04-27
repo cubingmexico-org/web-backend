@@ -122,7 +122,7 @@ def update_full_database():
                                     for event_spec in str(row["eventSpecs"]).split():
                                         cur.execute(
                                             """
-                                            INSERT INTO competition_events (competitionId, eventId)
+                                            INSERT INTO competition_events ("competitionId", "eventId")
                                             VALUES (%(competitionId)s, %(eventId)s)
                                             ON CONFLICT DO NOTHING
                                             """,
