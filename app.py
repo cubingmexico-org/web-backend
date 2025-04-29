@@ -755,5 +755,37 @@ def update_kinch_ranks():
         log.error(e)
         return jsonify({"success": False, "message": "Error updating kinch ranks"}), 500
 
+@app.route("/update-all", methods=["POST"])
+def update_all():
+    updates = [
+        ("update_full_database", update_full_database),
+        ("update_state_ranks", update_state_ranks),
+        ("update_sum_of_ranks", update_sum_of_ranks),
+        ("update_kinch_ranks", update_kinch_ranks)
+    ]
+    details = {}
+    for name, func in updates:
+        result = func()
+        # Handle both tuple responses and Flask Response objects.
+        if isinstance(result, tuple) and len(result) == 2:
+            json_data, status_code = result
+        else:
+            json_data = result.get_json()
+            status_code = result.status_code
+
+        details[name] = {"status": status_code, "result": json_data}
+        if status_code != 200:
+            return jsonify({
+                "success": False,
+                "message": f"Error occurred during {name}",
+                "details": details
+            }), status_code
+
+    return jsonify({
+        "success": True,
+        "message": "All updates executed successfully",
+        "details": details
+    })
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
