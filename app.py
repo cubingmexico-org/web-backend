@@ -332,6 +332,7 @@ def update_full_database():
                             start = i * chunk_size
                             end = (i + 1) * chunk_size
                             chunk = file_bytes[start:end].decode("utf-8", errors="ignore")
+                            log.info(f"Processing chunk {i + 1} of {total_chunks}")
                             if i == 0:
                                 parsed = pd.read_csv(
                                     io.StringIO(chunk),
@@ -361,6 +362,7 @@ def update_full_database():
                                 )
                                 for _, row in df_filtered.iterrows()
                             ]
+                            log.debug(f"Chunk {i + 1}: Prepared {len(rows_to_insert)} rows for insertion")
 
                             # Perform batch insert
                             with get_connection() as conn:
@@ -377,6 +379,7 @@ def update_full_database():
                                         """,
                                         rows_to_insert
                                     )
+                            log.info(f"Chunk {i + 1}: Inserted batch into 'results' table")
                         log.info("Database updated successfully")
         return jsonify({"success": True, "message": "Database updated successfully"})
     except Exception as e:
@@ -396,7 +399,6 @@ def update_state_ranks():
                 # Fetch all states
                 cur.execute('SELECT id, name FROM states')
                 states = cur.fetchall()
-                log.info(f"Fetched {len(states)} states")
 
                 # Fetch events excluding EXCLUDED_EVENTS
                 if EXCLUDED_EVENTS:
@@ -406,7 +408,6 @@ def update_state_ranks():
                 else:
                     cur.execute('SELECT id FROM events')
                 events = cur.fetchall()
-                log.info(f"Fetched {len(events)} events (excluded: {EXCLUDED_EVENTS})")
 
                 single_updates = []
                 average_updates = []
@@ -417,8 +418,6 @@ def update_state_ranks():
                     log.info(f"Processing state: {state_name}")
 
                     for event_row in events:
-                        log.info(f"  - Event: {event_row.id}")
-
                         # ranksSingle
                         cur.execute(
                             """
@@ -521,6 +520,7 @@ def update_state_ranks():
 @app.route("/update-sum-of-ranks", methods=["POST"])
 def update_sum_of_ranks():
     try:
+        log.info("Starting sum of ranks update")
         excluded = ",".join(f"'{e}'" for e in EXCLUDED_EVENTS)
 
         single_query = f"""
@@ -598,9 +598,12 @@ def update_sum_of_ranks():
         # Handle single results
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info("Deleting existing sumOfRanks records for single results")
                 cur.execute('DELETE FROM "sumOfRanks" WHERE "resultType" = %s', ('single',))
+                log.info("Executing single query")
                 cur.execute(single_query)
                 persons = cur.fetchall()
+                log.info(f"Fetched {len(persons)} record(s) for single results")
                 rank = 1
                 for row in persons:
                     cur.execute(
@@ -615,9 +618,12 @@ def update_sum_of_ranks():
         # Handle average results
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info("Deleting existing sumOfRanks records for average results")
                 cur.execute('DELETE FROM "sumOfRanks" WHERE "resultType" = %s', ('average',))
+                log.info("Executing average query")
                 cur.execute(average_query)
                 persons = cur.fetchall()
+                log.info(f"Fetched {len(persons)} record(s) for average results")
                 rank = 1
                 for row in persons:
                     cur.execute(
@@ -632,12 +638,14 @@ def update_sum_of_ranks():
         log.info("Sum of ranks updated successfully")
         return jsonify({"success": True, "message": "Sum of ranks updated successfully"})
     except Exception as e:
-        log.error(e)
+        log.error(f"Error updating sum of ranks: {e}")
         return jsonify({"success": False, "message": "Error updating sum of ranks"}), 500
 
 @app.route("/update-kinch-ranks", methods=["POST"])
 def update_kinch_ranks():
     try:
+        log.info("Starting kinch ranks update")
+
         # Build CSV strings for excluded and single events
         excluded = ",".join(f"'{e}'" for e in EXCLUDED_EVENTS)
         single_events = ",".join(f"'{e}'" for e in SINGLE_EVENTS)
@@ -732,12 +740,15 @@ def update_kinch_ranks():
 
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info("Deleting existing kinchRanks records")
                 # Delete existing kinchRanks records
                 cur.execute('DELETE FROM "kinchRanks"')
 
+                log.info("Executing kinch ranks query")
                 # Execute the main query
                 cur.execute(query)
                 persons = cur.fetchall()
+                log.info(f"Fetched {len(persons)} record(s) for updating kinch ranks")
 
                 # Insert new results
                 for index, row in enumerate(persons):
@@ -752,40 +763,52 @@ def update_kinch_ranks():
         log.info("Kinch ranks updated successfully")
         return jsonify({"success": True, "message": "Kinch ranks updated successfully"})
     except Exception as e:
-        log.error(e)
+        log.error(f"Error updating kinch ranks: {e}")
         return jsonify({"success": False, "message": "Error updating kinch ranks"}), 500
 
 @app.route("/update-all", methods=["POST"])
 def update_all():
-    updates = [
-        ("update_full_database", update_full_database),
-        ("update_state_ranks", update_state_ranks),
-        ("update_sum_of_ranks", update_sum_of_ranks),
-        ("update_kinch_ranks", update_kinch_ranks)
-    ]
-    details = {}
-    for name, func in updates:
-        result = func()
-        # Handle both tuple responses and Flask Response objects.
-        if isinstance(result, tuple) and len(result) == 2:
-            json_data, status_code = result
-        else:
-            json_data = result.get_json()
-            status_code = result.status_code
+    try:
+        log.info("Starting all updates")
+        updates = [
+            ("update_full_database", update_full_database),
+            ("update_state_ranks", update_state_ranks),
+            ("update_sum_of_ranks", update_sum_of_ranks),
+            ("update_kinch_ranks", update_kinch_ranks)
+        ]
+        details = {}
+        for name, func in updates:
+            log.info(f"Starting update: {name}")
+            result = func()
+            # Handle both tuple responses and Flask Response objects.
+            if isinstance(result, tuple) and len(result) == 2:
+                json_data, status_code = result
+            else:
+                json_data = result.get_json()
+                status_code = result.status_code
 
-        details[name] = {"status": status_code, "result": json_data}
-        if status_code != 200:
-            return jsonify({
-                "success": False,
-                "message": f"Error occurred during {name}",
-                "details": details
-            }), status_code
+            details[name] = {"status": status_code, "result": json_data}
+            log.info(f"Completed update: {name} with status {status_code}")
+            if status_code != 200:
+                log.error(f"Error occurred during {name}: {json_data}")
+                return jsonify({
+                    "success": False,
+                    "message": f"Error occurred during {name}",
+                    "details": details
+                }), status_code
 
-    return jsonify({
-        "success": True,
-        "message": "All updates executed successfully",
-        "details": details
-    })
+        log.info("All updates executed successfully")
+        return jsonify({
+            "success": True,
+            "message": "All updates executed successfully",
+            "details": details
+        })
+    except Exception as e:
+        log.error(f"Unhandled error in update_all: {e}")
+        return jsonify({
+            "success": False,
+            "message": "Error occurred during update_all",
+        }), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
