@@ -198,6 +198,28 @@ def update_full_database():
                                                 }
                                             )
 
+                elif file_name == "WCA_export_championships.tsv":
+                    log.info(f"Processing file: {file_name}")
+                    file_content = z.read(file_name).decode("utf-8")
+                    cleaned_content = file_content.replace('"', '')
+                    df = pd.read_csv(io.StringIO(cleaned_content), delimiter="\t", skip_blank_lines=True, na_values=["NULL"])
+                    championships = df.to_dict(orient="records")
+                    with get_connection() as conn:
+                        with conn.cursor() as cur:
+                            for row in championships:
+                                cur.execute(
+                                    """
+                                    INSERT INTO championship (id, "competitionId", "championshipType")
+                                    VALUES (%(id)s, %(competition_id)s, %(championship_type)s)
+                                    ON CONFLICT DO NOTHING
+                                    """,
+                                    {
+                                        "id": row["id"],
+                                        "competition_id": row["competition_id"],
+                                        "championship_type": row["championship_type"]
+                                    }
+                                )
+
                 elif file_name == "WCA_export_Events.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
