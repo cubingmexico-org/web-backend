@@ -347,6 +347,9 @@ def update_full_database():
                     chunk_size = 10_000_000
                     total_chunks = -(-len(file_bytes) // chunk_size)
                     headers = None
+                    current_year = datetime.now().year
+                    contains_current_year = False
+                
                     with get_connection() as conn:
                         with conn.cursor() as cur:
                             cur.execute('DELETE FROM results')  # Clear the table before inserting new data
@@ -372,6 +375,17 @@ def update_full_database():
                                 na_values=["NULL"],
                                 low_memory=False
                             )
+                
+                        # Check if the chunk contains results from the current year
+                        if not contains_current_year:
+                            contains_current_year = df_chunk["competitionId"].str.contains(str(current_year)).any()
+                            if contains_current_year:
+                                log.info("Found results from the current year. Continuing processing.")
+                            else:
+                                log.info(f"No results from the current year found in chunk {i + 1}.")
+            
+                        # If results from the current year are found, continue processing
+                        if contains_current_year:
                             df_filtered = df_chunk[df_chunk["personCountryId"] == "Mexico"]
 
                             # Prepare rows for batch insert
@@ -402,7 +416,18 @@ def update_full_database():
                                         rows_to_insert
                                     )
                             log.info(f"Chunk {i + 1}: Inserted batch into 'results' table")
-                        log.info("Database updated successfully")
+
+                        # Break out of the loop early if results from the current year are found
+                        if contains_current_year:
+                            break
+
+                    if not contains_current_year:
+                        log.warning("Results.tsv file does not contain results from the current year. Skipping update.")
+                        return jsonify({
+                            "success": False,
+                            "message": "Results.tsv file is outdated. Skipping results update."
+                        }), 400
+        log.info("Database updated successfully")
         return jsonify({"success": True, "message": "Database updated successfully"})
     except Exception as e:
         log.error(e)
