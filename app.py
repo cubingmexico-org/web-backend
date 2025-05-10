@@ -209,7 +209,7 @@ def update_full_database():
                             for row in championships:
                                 cur.execute(
                                     """
-                                    INSERT INTO championship (id, "competitionId", "championshipType")
+                                    INSERT INTO championships (id, "competitionId", "championshipType")
                                     VALUES (%(id)s, %(competition_id)s, %(championship_type)s)
                                     ON CONFLICT DO NOTHING
                                     """,
