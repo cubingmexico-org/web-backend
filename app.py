@@ -39,7 +39,7 @@ def get_connection():
 
 @app.route("/update-database", methods=["POST"])
 def update_full_database():
-    url = "https://assets.worldcubeassociation.org/export/results/WCA_export129_20250509T000142Z.tsv.zip"
+    url = "https://www.worldcubeassociation.org/export/results/WCA_export.tsv.zip"
     try:
         response = requests.get(url)
         response.raise_for_status()
