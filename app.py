@@ -988,5 +988,81 @@ def update_all():
             "message": "Error occurred during update_all",
         }), 500
 
+@app.route("/get-teams", methods=["GET"])
+def get_teams():
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info("Fetching all teams")
+                cur.execute("SELECT * FROM teams")
+                teams = cur.fetchall()
+                teams_list = [dict(team._asdict()) for team in teams]
+                log.info(f"Fetched {len(teams_list)} team(s)")
+        return jsonify({"success": True, "teams": teams_list})
+    except Exception as e:
+        log.error(f"Error fetching teams: {e}")
+        return jsonify({"success": False, "message": "Error fetching teams"}), 500
+    
+@app.route("/get-team/<team_id>", methods=["GET"])
+def get_team_by_id(team_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info(f"Fetching team with ID: {team_id}")
+                cur.execute("SELECT * FROM teams WHERE id = %s", (team_id,))
+                team = cur.fetchone()
+                if team:
+                    team_data = dict(team._asdict())
+                    log.info(f"Fetched team: {team_data}")
+                    return jsonify({"success": True, "team": team_data})
+                else:
+                    log.warning(f"No team found with ID: {team_id}")
+                    return jsonify({"success": False, "message": "Team not found"}), 404
+    except Exception as e:
+        log.error(f"Error fetching team by ID: {e}")
+        return jsonify({"success": False, "message": "Error fetching team"}), 500
+
+@app.route("/rank/<state_id>/<type>/<event_id>", methods=["GET"])
+def get_rank(state_id, type, event_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info(f"Fetching rank for state: {state_id}, type: {type}, event: {event_id}")
+                
+                # Determine the table to query based on the type
+                table_name = "ranksSingle" if type == "single" else "ranksAverage"
+                
+                # Query to join persons table to get stateId
+                cur.execute(f"""
+                    SELECT rs."personId", rs."eventId", rs.best, rs."worldRank", rs."continentRank", rs."countryRank", rs."stateRank"
+                    FROM {table_name} rs
+                    INNER JOIN persons p ON rs."personId" = p.id
+                    WHERE p."stateId" = %s AND rs."eventId" = %s
+                """, (state_id, event_id))
+                
+                rank = cur.fetchone()
+                if rank:
+                    # Format the response as per the desired structure
+                    rank_data = {
+                        "rankType": type,
+                        "personId": rank.personId,
+                        "eventId": rank.eventId,
+                        "best": rank.best,
+                        "rank": {
+                            "world": rank.worldRank,
+                            "continent": rank.continentRank,
+                            "country": rank.countryRank,
+                            "state": rank.stateRank
+                        }
+                    }
+                    log.info(f"Fetched rank: {rank_data}")
+                    return jsonify({"success": True, "rank": rank_data})
+                else:
+                    log.warning(f"No rank found for state: {state_id}, type: {type}, event: {event_id}")
+                    return jsonify({"success": False, "message": "Rank not found"}), 404
+    except Exception as e:
+        log.error(f"Error fetching rank: {e}")
+        return jsonify({"success": False, "message": "Error fetching rank"}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
