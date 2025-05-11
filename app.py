@@ -1027,7 +1027,7 @@ def get_rank(state_id, type, event_id):
     try:
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-                log.info(f"Fetching rank for state: {state_id}, type: {type}, event: {event_id}")
+                log.info(f"Fetching ranks for state: {state_id}, type: {type}, event: {event_id}")
                 
                 # Determine the table to query based on the type
                 table_name = "ranksSingle" if type == "single" else "ranksAverage"
@@ -1040,29 +1040,32 @@ def get_rank(state_id, type, event_id):
                     WHERE p."stateId" = %s AND rs."eventId" = %s
                 """, (state_id, event_id))
                 
-                rank = cur.fetchone()
-                if rank:
-                    # Format the response as per the desired structure
-                    rank_data = {
-                        "rankType": type,
-                        "personId": rank.personId,
-                        "eventId": rank.eventId,
-                        "best": rank.best,
-                        "rank": {
-                            "world": rank.worldRank,
-                            "continent": rank.continentRank,
-                            "country": rank.countryRank,
-                            "state": rank.stateRank
+                ranks = cur.fetchall()
+                if ranks:
+                    # Format the response as an array of rank data
+                    rank_data = [
+                        {
+                            "rankType": type,
+                            "personId": rank.personId,
+                            "eventId": rank.eventId,
+                            "best": rank.best,
+                            "rank": {
+                                "world": rank.worldRank,
+                                "continent": rank.continentRank,
+                                "country": rank.countryRank,
+                                "state": rank.stateRank
+                            }
                         }
-                    }
-                    log.info(f"Fetched rank: {rank_data}")
-                    return jsonify({"success": True, "rank": rank_data})
+                        for rank in ranks
+                    ]
+                    log.info(f"Fetched {len(rank_data)} ranks")
+                    return jsonify({"success": True, "ranks": rank_data})
                 else:
-                    log.warning(f"No rank found for state: {state_id}, type: {type}, event: {event_id}")
-                    return jsonify({"success": False, "message": "Rank not found"}), 404
+                    log.warning(f"No ranks found for state: {state_id}, type: {type}, event: {event_id}")
+                    return jsonify({"success": False, "message": "Ranks not found"}), 404
     except Exception as e:
-        log.error(f"Error fetching rank: {e}")
-        return jsonify({"success": False, "message": "Error fetching rank"}), 500
+        log.error(f"Error fetching ranks: {e}")
+        return jsonify({"success": False, "message": "Error fetching ranks"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
