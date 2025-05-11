@@ -38,7 +38,7 @@ def get_connection():
     return psycopg2.connect(DB_URL)
 
 # Helper function to extract year from competitionId
-def get_year_from_competition_id(competition_id: str) -> int | None:
+def get_year_from_competition_id(competition_id: str):
     """
     Extracts the year from a competition ID string (e.g., "CompetitionName2024" -> 2024).
     Returns the year as an integer, or None if not found or input is invalid.
