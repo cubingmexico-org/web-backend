@@ -37,6 +37,20 @@ DB_URL = get_secret("db_url", GCP_PROJECT_ID)
 def get_connection():
     return psycopg2.connect(DB_URL)
 
+# Helper function to extract year from competitionId
+def get_year_from_competition_id(competition_id: str) -> int | None:
+    """
+    Extracts the year from a competition ID string (e.g., "CompetitionName2024" -> 2024).
+    Returns the year as an integer, or None if not found or input is invalid.
+    """
+    if not isinstance(competition_id, str):
+        return None
+    # Regex to find a 4-digit year (1xxx or 2xxx) at the end of the string.
+    match = re.search(r'([12]\d{3})$', competition_id)
+    if match:
+        return int(match.group(1))
+    return None
+
 @app.route("/update-database", methods=["POST"])
 def update_full_database():
     url = "https://www.worldcubeassociation.org/export/results/WCA_export.tsv.zip"
@@ -341,67 +355,214 @@ def update_full_database():
                                 rows_to_insert
                             )
 
+                # This is the beginning of your conditional block for WCA_export_Results.tsv
+                # Ensure this `elif` statement is correctly placed in your existing file processing loop.
                 elif file_name == "WCA_export_Results.tsv":
-                    log.info(f"Processing file: {file_name}")
-                    file_bytes = z.read(file_name)
-                    chunk_size = 10_000_000
-                    total_chunks = -(-len(file_bytes) // chunk_size)
-                    headers = None
-                    with get_connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute('DELETE FROM results')  # Clear the table before inserting new data
-                        for i in range(total_chunks):
-                            start = i * chunk_size
-                            end = (i + 1) * chunk_size
-                            chunk = file_bytes[start:end].decode("utf-8", errors="ignore")
-                            log.info(f"Processing chunk {i + 1} of {total_chunks}")
-                            if i == 0:
-                                parsed = pd.read_csv(
-                                    io.StringIO(chunk),
-                                    delimiter="\t",
-                                    skip_blank_lines=True,
-                                    na_values=["NULL"],
-                                    low_memory=False
-                                )
-                                headers = parsed.columns.tolist()
-                            chunk_with_headers = "\t".join(headers) + "\n" + chunk
-                            df_chunk = pd.read_csv(
-                                io.StringIO(chunk_with_headers),
-                                delimiter="\t",
-                                skip_blank_lines=True,
-                                na_values=["NULL"],
-                                low_memory=False
+                    log.info(f"Evaluating file for processing: {file_name}")
+                    file_bytes = z.read(file_name) # Read file bytes from the zip archive member
+
+                    # --- Start: Pre-check to determine if this Results.tsv should be skipped ---
+
+                    # Define the cutoff year. If the LATEST competition year in THIS specific
+                    # WCA_export_Results.tsv file is THIS YEAR or OLDER, the file is considered outdated.
+                    # For example, if results *until December 31st, 2023* are known to be problematic in some
+                    # WCA export versions, set this to 2023.
+                    # Adjust this year based on the "certain date" you referred to.
+                    OUTDATED_IF_MAX_YEAR_IS_OR_BELOW = 2024 # EXAMPLE VALUE - Set this according to your needs
+
+                    latest_year_in_file = 0
+                    try:
+                        # Peak into the file: read only the competitionId column to find the max year.
+                        # This helps decide if the entire file is "too old" to process.
+                        # Using io.BytesIO because file_bytes is already in memory.
+                        df_comp_ids = pd.read_csv(
+                            io.BytesIO(file_bytes),
+                            delimiter="\t",
+                            usecols=['competitionId'], # Only need this column for the check
+                            skip_blank_lines=True,
+                            na_values=["NULL"],
+                            low_memory=False
+                        )
+
+                        if not df_comp_ids.empty and 'competitionId' in df_comp_ids.columns:
+                            # Apply the year extraction function
+                            years = df_comp_ids['competitionId'].apply(
+                                lambda x: get_year_from_competition_id(x) if pd.notna(x) else None
                             )
-                            df_filtered = df_chunk[df_chunk["personCountryId"] == "Mexico"]
+                            # Filter out None values and any non-sensical years (e.g., < 1980, adjust if needed)
+                            valid_years = years.dropna().astype(int)
+                            valid_years = valid_years[valid_years > 1980] # Assuming WCA competitions started after 1980
+                            
+                            if not valid_years.empty:
+                                latest_year_in_file = valid_years.max()
+                            else:
+                                log.warning(f"Could not determine any valid competition years from {file_name} for pre-check.")
+                        else:
+                            log.warning(f"{file_name} is empty or 'competitionId' column not found/empty for pre-check.")
 
-                            # Prepare rows for batch insert
-                            rows_to_insert = [
-                                (
-                                    row["competitionId"], row["eventId"], row["roundTypeId"], row["pos"], row["best"],
-                                    row["average"], row["personId"], row["formatId"], row["value1"], row["value2"],
-                                    row["value3"], row["value4"], row["value5"], row["regionalSingleRecord"],
-                                    row["regionalAverageRecord"]
-                                )
-                                for _, row in df_filtered.iterrows()
-                            ]
-                            log.debug(f"Chunk {i + 1}: Prepared {len(rows_to_insert)} rows for insertion")
+                    except Exception as e:
+                        log.error(f"Error during pre-check for latest year in {file_name}: {e}. "
+                                "Will proceed with processing, but caution is advised if OUTDATED_IF_MAX_YEAR_IS_OR_BELOW is set.")
+                        # If pre-check fails, latest_year_in_file remains 0.
+                        # The logic below will then likely process the file unless OUTDATED_IF_MAX_YEAR_IS_OR_BELOW is non-positive.
 
-                            # Perform batch insert
+                    # Decision to skip the entire file's processing (including DELETE FROM results)
+                    # Skips if a latest year was found AND that year is at or below the outdated threshold.
+                    if latest_year_in_file > 0 and latest_year_in_file <= OUTDATED_IF_MAX_YEAR_IS_OR_BELOW:
+                        log.info(f"SKIPPING update for {file_name}. "
+                                f"The latest competition year found in this file is {latest_year_in_file}, "
+                                f"which is at or below the defined outdated threshold of {OUTDATED_IF_MAX_YEAR_IS_OR_BELOW}. "
+                                f"This file is considered to contain outdated results, and its processing will be omitted "
+                                f"to prevent potentially corrupting the 'results' table.")
+                        # By not entering the 'else' block below, we skip the DELETE and INSERT operations.
+                        # If this `elif` is part of a loop like `for file_name in z.namelist():`,
+                        # you might want a `continue` statement here if there's more code after this elif block in the loop.
+                    else:
+                        # This 'else' block contains the original processing logic.
+                        # It executes if:
+                        # 1. latest_year_in_file is 0 (e.g., file empty, no valid compIDs, pre-check error).
+                        # 2. latest_year_in_file is greater than OUTDATED_IF_MAX_YEAR_IS_OR_BELOW (file is new enough).
+
+                        if latest_year_in_file == 0 and OUTDATED_IF_MAX_YEAR_IS_OR_BELOW > 0:
+                            log.warning(f"Could not determine latest year in {file_name} (or file is empty/no competitions), "
+                                        f"but OUTDATED_IF_MAX_YEAR_IS_OR_BELOW ({OUTDATED_IF_MAX_YEAR_IS_OR_BELOW}) is set. "
+                                        f"Proceeding with processing {file_name} as it's not confirmed to be outdated. "
+                                        "This will clear the table. Ensure this is the desired behavior for such files.")
+                        elif latest_year_in_file > 0 : # Normal case: file is not outdated.
+                            log.info(f"Proceeding with processing {file_name}. Latest competition year in file ({latest_year_in_file}) "
+                                    f"is more recent than the outdated threshold ({OUTDATED_IF_MAX_YEAR_IS_OR_BELOW}).")
+                        else: # Default case if latest_year_in_file is 0 and threshold is not prohibitive (e.g. 0 or negative)
+                            log.info(f"Proceeding with processing {file_name} (year pre-check not conclusive for outdatedness or threshold not applicable).")
+
+                        # --- Original processing logic starts here ---
+                        log.info(f"Starting full processing for {file_name}, including table clear and data insertion.")
+                        
+                        chunk_size = 10_000_000  # 10MB chunks
+                        # Integer ceil division to calculate total_chunks
+                        total_chunks = -(-len(file_bytes) // chunk_size) if len(file_bytes) > 0 else 0
+                        headers = None
+
+                        if total_chunks == 0:
+                            log.info(f"File {file_name} is empty. Clearing 'results' table as per standard procedure, but no data will be inserted.")
                             with get_connection() as conn:
                                 with conn.cursor() as cur:
-                                    execute_values(
-                                        cur,
-                                        """
-                                        INSERT INTO results
-                                        ("competitionId", "eventId", "roundTypeId", pos, best, average,
-                                        "personId", "formatId", value1, value2, value3, value4, value5,
-                                        "regionalSingleRecord", "regionalAverageRecord")
-                                        VALUES %s
-                                        ON CONFLICT DO NOTHING
-                                        """,
-                                        rows_to_insert
+                                    cur.execute('DELETE FROM results')
+                            log.info(f"'results' table cleared due to processing empty file {file_name}.")
+                        else:
+                            # Clear the table BEFORE inserting new data (only if we are processing the file)
+                            with get_connection() as conn:
+                                with conn.cursor() as cur:
+                                    log.info(f"Clearing all data from 'results' table before inserting new data from {file_name}.")
+                                    cur.execute('DELETE FROM results') # Clear the table
+
+                            for i in range(total_chunks):
+                                start = i * chunk_size
+                                end = (i + 1) * chunk_size
+                                # Slice the bytes for the current chunk
+                                chunk_bytes = file_bytes[start:end]
+                                # Decode the chunk bytes to string
+                                chunk_str = chunk_bytes.decode("utf-8", errors="ignore")
+                                
+                                log.info(f"Processing chunk {i + 1} of {total_chunks} for {file_name}")
+
+                                current_df_chunk = None
+                                if i == 0:
+                                    # First chunk: read it to get headers and data
+                                    current_df_chunk = pd.read_csv(
+                                        io.StringIO(chunk_str),
+                                        delimiter="\t",
+                                        skip_blank_lines=True,
+                                        na_values=["NULL"],
+                                        low_memory=False
                                     )
-                            log.info(f"Chunk {i + 1}: Inserted batch into 'results' table")
+                                    if not current_df_chunk.empty:
+                                        headers = current_df_chunk.columns.tolist()
+                                        log.debug(f"Headers extracted from first chunk: {headers}")
+                                    else:
+                                        log.warning(f"First chunk of {file_name} is empty or resulted in an empty DataFrame. "
+                                                    "Headers might not be determined.")
+                                        # If headers are not set, subsequent chunks will fail.
+                                        # We break here as processing cannot continue reliably.
+                                        if headers is None:
+                                            log.error(f"Headers could not be determined from the first chunk of {file_name}. "
+                                                    "Aborting processing for this file.")
+                                            break # Exit the chunk processing loop
+                                else:
+                                    # Subsequent chunks: use previously determined headers
+                                    if headers is None:
+                                        # This should not happen if the first chunk was processed correctly and was not empty.
+                                        log.error(f"Headers not available for chunk {i + 1} of {file_name}. "
+                                                "Skipping further processing of this file.")
+                                        break # Exit the chunk processing loop
+
+                                    # Prepend the header string to the current data chunk string
+                                    # Ensure chunk_str itself does not contain headers.
+                                    chunk_with_headers_str = "\t".join(headers) + "\n" + chunk_str
+                                    current_df_chunk = pd.read_csv(
+                                        io.StringIO(chunk_with_headers_str),
+                                        delimiter="\t",
+                                        skip_blank_lines=True,
+                                        na_values=["NULL"],
+                                        low_memory=False,
+                                        header=0,        # The first line of chunk_with_headers_str is the header
+                                        names=headers    # Enforce these column names; helps with malformed/empty chunks
+                                    )
+                                
+                                if current_df_chunk is None or current_df_chunk.empty:
+                                    log.info(f"Chunk {i + 1} (after parsing) is empty or resulted in an empty DataFrame. "
+                                            "Skipping insertion for this chunk.")
+                                    continue
+
+                                # Ensure all expected columns are present in the DataFrame (pandas with names=headers usually handles this)
+                                # This is a defensive check.
+                                for col in headers:
+                                    if col not in current_df_chunk.columns:
+                                        current_df_chunk[col] = pd.NA # Add missing columns as NA
+
+                                df_filtered = current_df_chunk[current_df_chunk["personCountryId"] == "Mexico"]
+
+                                if df_filtered.empty:
+                                    log.info(f"Chunk {i + 1}: No rows for 'Mexico' after filtering.")
+                                    continue
+
+                                # Prepare rows for batch insert, using original row["column"] access
+                                rows_to_insert = []
+                                for _, row in df_filtered.iterrows():
+                                    try:
+                                        rows_to_insert.append((
+                                            row["competitionId"], row["eventId"], row["roundTypeId"], row["pos"], row["best"],
+                                            row["average"], row["personId"], row["formatId"], row["value1"], row["value2"],
+                                            row["value3"], row["value4"], row["value5"], row["regionalSingleRecord"],
+                                            row["regionalAverageRecord"]
+                                        ))
+                                    except KeyError as e:
+                                        log.error(f"KeyError: Missing column '{e}' in a row from chunk {i+1}. "
+                                                f"Headers: {headers}. Row data (first few items): {row.iloc[:5].to_dict()}. Skipping this row.")
+                                        continue # Skip this problematic row
+                                
+                                log.debug(f"Chunk {i + 1}: Prepared {len(rows_to_insert)} rows for insertion")
+
+                                if rows_to_insert:
+                                    # Perform batch insert
+                                    with get_connection() as conn_insert: # Get a fresh connection for the insert if needed by your manager
+                                        with conn_insert.cursor() as cur_insert:
+                                            execute_values(
+                                                cur_insert,
+                                                """
+                                                INSERT INTO results
+                                                ("competitionId", "eventId", "roundTypeId", pos, best, average,
+                                                "personId", "formatId", value1, value2, value3, value4, value5,
+                                                "regionalSingleRecord", "regionalAverageRecord")
+                                                VALUES %s
+                                                ON CONFLICT DO NOTHING
+                                                """,
+                                                rows_to_insert
+                                            )
+                                    log.info(f"Chunk {i + 1}: Inserted batch of {len(rows_to_insert)} rows into 'results' table for 'Mexico'.")
+                                else:
+                                    log.info(f"Chunk {i + 1}: No valid rows to insert for 'Mexico' after preparing for batch.")
+                            log.info(f"Finished processing all chunks for {file_name}.")
+                # --- End of WCA_export_Results.tsv processing logic ---
         log.info("Database updated successfully")
         return jsonify({"success": True, "message": "Database updated successfully"})
     except Exception as e:
