@@ -1035,7 +1035,7 @@ def get_rank(state_id, type, event_id):
                 # Query to join persons table to get stateId
                 cur.execute(f"""
                     SELECT rs."personId", rs."eventId", rs.best, rs."worldRank", rs."continentRank", rs."countryRank", rs."stateRank"
-                    FROM {table_name} rs
+                    FROM "{table_name}" rs
                     INNER JOIN persons p ON rs."personId" = p.id
                     WHERE p."stateId" = %s AND rs."eventId" = %s
                 """, (state_id, event_id))
