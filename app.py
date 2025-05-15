@@ -988,7 +988,7 @@ def update_all():
             "message": "Error occurred during update_all",
         }), 500
 
-@app.route("/get-teams", methods=["GET"])
+@app.route("/teams", methods=["GET"])
 def get_teams():
     try:
         with get_connection() as conn:
@@ -1003,20 +1003,20 @@ def get_teams():
         log.error(f"Error fetching teams: {e}")
         return jsonify({"success": False, "message": "Error fetching teams"}), 500
     
-@app.route("/get-team/<team_id>", methods=["GET"])
-def get_team_by_id(team_id):
+@app.route("/teams/<state_id>", methods=["GET"])
+def get_team_by_id(state_id):
     try:
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-                log.info(f"Fetching team with ID: {team_id}")
-                cur.execute("SELECT * FROM teams WHERE id = %s", (team_id,))
+                log.info(f"Fetching team with ID: {state_id}")
+                cur.execute("""SELECT * FROM teams WHERE "stateId" = %s""", (state_id,))
                 team = cur.fetchone()
                 if team:
                     team_data = dict(team._asdict())
                     log.info(f"Fetched team: {team_data}")
                     return jsonify({"success": True, "team": team_data})
                 else:
-                    log.warning(f"No team found with ID: {team_id}")
+                    log.warning(f"No team found with ID: {state_id}")
                     return jsonify({"success": False, "message": "Team not found"}), 404
     except Exception as e:
         log.error(f"Error fetching team by ID: {e}")
