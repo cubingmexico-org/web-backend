@@ -454,6 +454,12 @@ def update_full_database():
                                 with conn.cursor() as cur:
                                     log.info(f"Clearing all data from 'results' table before inserting new data from {file_name}.")
                                     cur.execute('DELETE FROM results') # Clear the table
+                                    
+                                    log.info("Fetching all person IDs from 'persons' table.")
+                                    cur.execute("SELECT id FROM persons")
+                                    persons = cur.fetchall()
+                                    person_ids = {p[0] for p in persons}
+                                    log.info(f"Loaded {len(person_ids)} person IDs into memory for validation.")
 
                             for i in range(total_chunks):
                                 start = i * chunk_size
@@ -528,6 +534,9 @@ def update_full_database():
                                 # Prepare rows for batch insert, using original row["column"] access
                                 rows_to_insert = []
                                 for _, row in df_filtered.iterrows():
+                                    if row["personId"] not in person_ids:
+                                        log.warning(f"Skipping result for personId '{row['personId']}' as it does not exist in the 'persons' table. Competition: {row['competitionId']}")
+                                        continue
                                     try:
                                         rows_to_insert.append((
                                             row["competitionId"], row["eventId"], row["roundTypeId"], row["pos"], row["best"],
