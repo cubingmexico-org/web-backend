@@ -361,6 +361,40 @@ def update_full_database():
                     log.info(f"Evaluating file for processing: {file_name}")
                     file_bytes = z.read(file_name) # Read file bytes from the zip archive member
 
+                    # --- Start: Pre-check for missing personIds ---
+                    try:
+                        log.info(f"Pre-checking personIds in {file_name} against the database.")
+                        with get_connection() as conn:
+                            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                                cur.execute("SELECT id FROM persons")
+                                db_persons = cur.fetchall()
+                                db_person_ids = {p.id for p in db_persons}
+                        
+                        df_results_persons = pd.read_csv(
+                            io.BytesIO(file_bytes),
+                            delimiter="\t",
+                            usecols=['personId', 'personCountryId'],
+                            skip_blank_lines=True,
+                            na_values=["NULL"],
+                            low_memory=False
+                        )
+
+                        df_mexico_results = df_results_persons[df_results_persons['personCountryId'] == 'Mexico']
+                        file_person_ids = set(df_mexico_results['personId'].unique())
+                        
+                        missing_person_ids = file_person_ids - db_person_ids
+                        
+                        if missing_person_ids:
+                            log.error(f"SKIPPING update for {file_name} due to corrupted data. "
+                                      f"The following personIds from the results file do not exist in the persons table: "
+                                      f"{list(missing_person_ids)[:10]} (showing up to 10). "
+                                      "This indicates a corrupted export file. The 'results' table will not be modified.")
+                            continue # Skip to the next file in the zip
+                    except Exception as e:
+                        log.error(f"Error during personId pre-check for {file_name}: {e}. "
+                                  "Skipping processing of this file to be safe.")
+                        continue
+
                     # --- Start: Pre-check to determine if this Results.tsv should be skipped ---
 
                     # Define the cutoff year. If the LATEST competition year in THIS specific
@@ -454,12 +488,6 @@ def update_full_database():
                                 with conn.cursor() as cur:
                                     log.info(f"Clearing all data from 'results' table before inserting new data from {file_name}.")
                                     cur.execute('DELETE FROM results') # Clear the table
-                                    
-                                    log.info("Fetching all person IDs from 'persons' table.")
-                                    cur.execute("SELECT id FROM persons")
-                                    persons = cur.fetchall()
-                                    person_ids = {p[0] for p in persons}
-                                    log.info(f"Loaded {len(person_ids)} person IDs into memory for validation.")
 
                             for i in range(total_chunks):
                                 start = i * chunk_size
@@ -534,9 +562,6 @@ def update_full_database():
                                 # Prepare rows for batch insert, using original row["column"] access
                                 rows_to_insert = []
                                 for _, row in df_filtered.iterrows():
-                                    if row["personId"] not in person_ids:
-                                        log.warning(f"Skipping result for personId '{row['personId']}' as it does not exist in the 'persons' table. Competition: {row['competitionId']}")
-                                        continue
                                     try:
                                         rows_to_insert.append((
                                             row["competitionId"], row["eventId"], row["roundTypeId"], row["pos"], row["best"],
