@@ -57,6 +57,16 @@ def update_full_database():
     try:
         response = requests.get(url)
         response.raise_for_status()
+
+        filename = "WCA_export.tsv.zip"  # Default filename
+        content_disposition = response.headers.get('content-disposition')
+        if content_disposition:
+            filenames = re.findall('filename="?([^"]+)"?', content_disposition)
+            if filenames:
+                filename = filenames[0]
+        
+        log.info(f"Processing downloaded file: {filename}")
+
     except requests.HTTPError as e:
         return jsonify({"error": f"Failed to fetch zip file: {e}"}), 500
 
