@@ -61,11 +61,12 @@ def update_full_database():
         filename = "WCA_export.tsv.zip"  # Default filename
         content_disposition = response.headers.get('content-disposition')
         if content_disposition:
-            filenames = re.findall('filename="?([^"]+)"?', content_disposition)
-            if filenames:
-                filename = filenames[0]
+            match = re.search(r'filename="?([^"]+)"?', content_disposition)
+            if match:
+                filename = match.group(1)
         
         log.info(f"Processing downloaded file: {filename}")
+
 
     except requests.HTTPError as e:
         return jsonify({"error": f"Failed to fetch zip file: {e}"}), 500
