@@ -55,18 +55,20 @@ def get_year_from_competition_id(competition_id: str):
 def update_full_database():
     url = "https://www.worldcubeassociation.org/export/results/WCA_export.tsv.zip"
     try:
+        log.info(f"Fetching data from {url}")
         response = requests.get(url)
         response.raise_for_status()
 
-        filename = "WCA_export.tsv.zip"  # Default filename
         content_disposition = response.headers.get('content-disposition')
         if content_disposition:
-            match = re.search(r'filename="?([^"]+)"?', content_disposition)
-            if match:
-                filename = match.group(1)
-        
-        log.info(f"Processing downloaded file: {filename}")
-
+            filename_match = re.search(r'filename="?([^"]+)"?', content_disposition)
+            if filename_match:
+                filename = filename_match.group(1)
+                log.info(f"Downloaded file with filename: {filename}")
+            else:
+                log.warning("Could not determine filename from Content-Disposition header.")
+        else:
+            log.warning("Content-Disposition header not found in response.")
 
     except requests.HTTPError as e:
         return jsonify({"error": f"Failed to fetch zip file: {e}"}), 500
