@@ -476,12 +476,13 @@ def update_full_database():
                                 "Skipping processing of this file to be safe.")
                         continue
 
-                    log.info(f"Starting full processing for {file_name}, including table clear and data insertion.")
+                    log.info(f"Starting full processing for {file_name}, including data validation and insertion.")
                     
                     chunk_size = 10_000_000  # 10MB chunks
-                    # Integer ceil division to calculate total_chunks
                     total_chunks = -(-len(file_bytes) // chunk_size) if len(file_bytes) > 0 else 0
                     headers = None
+                    all_rows_to_insert = []
+                    is_data_corrupt = False
 
                     if total_chunks == 0:
                         log.info(f"File {file_name} is empty. Clearing 'results' table as per standard procedure, but no data will be inserted.")
@@ -490,25 +491,19 @@ def update_full_database():
                                 cur.execute('DELETE FROM results')
                         log.info(f"'results' table cleared due to processing empty file {file_name}.")
                     else:
-                        # Clear the table BEFORE inserting new data (only if we are processing the file)
-                        with get_connection() as conn:
-                            with conn.cursor() as cur:
-                                log.info(f"Clearing all data from 'results' table before inserting new data from {file_name}.")
-                                cur.execute('DELETE FROM results') # Clear the table
-
                         for i in range(total_chunks):
+                            if is_data_corrupt:
+                                break # Stop processing chunks if corruption was found
+
                             start = i * chunk_size
                             end = (i + 1) * chunk_size
-                            # Slice the bytes for the current chunk
                             chunk_bytes = file_bytes[start:end]
-                            # Decode the chunk bytes to string
                             chunk_str = chunk_bytes.decode("utf-8", errors="ignore")
                             
-                            log.info(f"Processing chunk {i + 1} of {total_chunks} for {file_name}")
+                            log.info(f"Validating chunk {i + 1} of {total_chunks} for {file_name}")
 
                             current_df_chunk = None
                             if i == 0:
-                                # First chunk: read it to get headers and data
                                 current_df_chunk = pd.read_csv(
                                     io.StringIO(chunk_str),
                                     delimiter="\t",
@@ -520,24 +515,12 @@ def update_full_database():
                                     headers = current_df_chunk.columns.tolist()
                                     log.debug(f"Headers extracted from first chunk: {headers}")
                                 else:
-                                    log.warning(f"First chunk of {file_name} is empty or resulted in an empty DataFrame. "
-                                                "Headers might not be determined.")
-                                    # If headers are not set, subsequent chunks will fail.
-                                    # We break here as processing cannot continue reliably.
-                                    if headers is None:
-                                        log.error(f"Headers could not be determined from the first chunk of {file_name}. "
-                                                "Aborting processing for this file.")
-                                        break # Exit the chunk processing loop
+                                    log.warning(f"First chunk of {file_name} is empty. Aborting processing.")
+                                    break
                             else:
-                                # Subsequent chunks: use previously determined headers
                                 if headers is None:
-                                    # This should not happen if the first chunk was processed correctly and was not empty.
-                                    log.error(f"Headers not available for chunk {i + 1} of {file_name}. "
-                                            "Skipping further processing of this file.")
-                                    break # Exit the chunk processing loop
-
-                                # Prepend the header string to the current data chunk string
-                                # Ensure chunk_str itself does not contain headers.
+                                    log.error(f"Headers not available for chunk {i + 1}. Aborting processing.")
+                                    break
                                 chunk_with_headers_str = "\t".join(headers) + "\n" + chunk_str
                                 current_df_chunk = pd.read_csv(
                                     io.StringIO(chunk_with_headers_str),
@@ -545,50 +528,62 @@ def update_full_database():
                                     skip_blank_lines=True,
                                     na_values=["NULL"],
                                     low_memory=False,
-                                    header=0,        # The first line of chunk_with_headers_str is the header
-                                    names=headers    # Enforce these column names; helps with malformed/empty chunks
+                                    header=0,
+                                    names=headers
                                 )
                             
                             if current_df_chunk is None or current_df_chunk.empty:
-                                log.info(f"Chunk {i + 1} (after parsing) is empty or resulted in an empty DataFrame. "
-                                        "Skipping insertion for this chunk.")
+                                log.info(f"Chunk {i + 1} is empty. Skipping.")
                                 continue
 
-                            # Ensure all expected columns are present in the DataFrame (pandas with names=headers usually handles this)
-                            # This is a defensive check.
                             for col in headers:
                                 if col not in current_df_chunk.columns:
-                                    current_df_chunk[col] = pd.NA # Add missing columns as NA
+                                    current_df_chunk[col] = pd.NA
 
                             df_filtered = current_df_chunk[current_df_chunk["personCountryId"] == "Mexico"]
 
                             if df_filtered.empty:
-                                log.info(f"Chunk {i + 1}: No rows for 'Mexico' after filtering.")
                                 continue
 
-                            # Prepare rows for batch insert, using original row["column"] access
-                            rows_to_insert = []
                             for _, row in df_filtered.iterrows():
                                 try:
-                                    rows_to_insert.append((
-                                        row["competitionId"], row["eventId"], row["roundTypeId"], row["pos"], row["best"],
+                                    pos = int(row["pos"])
+                                    if not -32768 <= pos <= 32767:
+                                        log.error(f"CORRUPTED DATA DETECTED: 'pos' value {pos} is out of smallint range. "
+                                                  f"Aborting update for {file_name}. The 'results' table will not be modified.")
+                                        is_data_corrupt = True
+                                        break # Stop processing rows in this chunk
+                                    
+                                    all_rows_to_insert.append((
+                                        row["competitionId"], row["eventId"], row["roundTypeId"], pos, row["best"],
                                         row["average"], row["personId"], row["formatId"], row["value1"], row["value2"],
                                         row["value3"], row["value4"], row["value5"], row["regionalSingleRecord"],
                                         row["regionalAverageRecord"]
                                     ))
-                                except KeyError as e:
-                                    log.error(f"KeyError: Missing column '{e}' in a row from chunk {i+1}. "
-                                            f"Headers: {headers}. Row data (first few items): {row.iloc[:5].to_dict()}. Skipping this row.")
-                                    continue # Skip this problematic row
-                            
-                            log.debug(f"Chunk {i + 1}: Prepared {len(rows_to_insert)} rows for insertion")
+                                except (KeyError, ValueError, TypeError) as e:
+                                    log.error(f"CORRUPTED DATA DETECTED: Error processing row in chunk {i+1}: {e}. "
+                                              f"Aborting update for {file_name}. The 'results' table will not be modified.")
+                                    is_data_corrupt = True
+                                    break # Stop processing rows in this chunk
+                        
+                        if is_data_corrupt:
+                            log.warning(f"Skipping database update for {file_name} due to corrupted data. 'results' table remains untouched.")
+                            continue # Skip to the next file in the zip
 
-                            if rows_to_insert:
-                                # Perform batch insert
-                                with get_connection() as conn_insert: # Get a fresh connection for the insert if needed by your manager
-                                    with conn_insert.cursor() as cur_insert:
+                        log.info(f"All chunks for {file_name} validated successfully. Total rows to insert for Mexico: {len(all_rows_to_insert)}.")
+
+                        # --- Start: Atomic database update ---
+                        if all_rows_to_insert:
+                            log.info(f"Proceeding with atomic update for 'results' table.")
+                            with get_connection() as conn:
+                                with conn.cursor() as cur:
+                                    try:
+                                        log.info(f"Clearing all data from 'results' table.")
+                                        cur.execute('DELETE FROM results')
+
+                                        log.info(f"Inserting {len(all_rows_to_insert)} rows into 'results' table.")
                                         execute_values(
-                                            cur_insert,
+                                            cur,
                                             """
                                             INSERT INTO results
                                             ("competitionId", "eventId", "roundTypeId", pos, best, average,
@@ -597,11 +592,22 @@ def update_full_database():
                                             VALUES %s
                                             ON CONFLICT DO NOTHING
                                             """,
-                                            rows_to_insert
+                                            all_rows_to_insert
                                         )
-                                log.info(f"Chunk {i + 1}: Inserted batch of {len(rows_to_insert)} rows into 'results' table for 'Mexico'.")
-                            else:
-                                log.info(f"Chunk {i + 1}: No valid rows to insert for 'Mexico' after preparing for batch.")
+                                        conn.commit()
+                                        log.info(f"Successfully committed changes to 'results' table for {file_name}.")
+                                    except Exception as e:
+                                        log.error(f"An error occurred during the atomic update for {file_name}: {e}. Rolling back transaction.")
+                                        conn.rollback()
+                                        continue # Move to next file
+                        else:
+                            log.info(f"No rows for 'Mexico' found in {file_name}. Clearing 'results' table as no new data is available.")
+                            with get_connection() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute('DELETE FROM results')
+                            log.info(f"'results' table cleared.")
+                        # --- End: Atomic database update ---
+
                         log.info(f"Finished processing all chunks for {file_name}.")
 
                         # --- Start: Update last competition with results metadata ---
