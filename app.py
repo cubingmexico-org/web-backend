@@ -547,12 +547,17 @@ def update_full_database():
 
                             for _, row in df_filtered.iterrows():
                                 try:
-                                    pos = int(row["pos"])
-                                    if not -32768 <= pos <= 32767:
-                                        log.error(f"CORRUPTED DATA DETECTED: 'pos' value {pos} is out of smallint range. "
-                                                  f"Aborting update for {file_name}. The 'results' table will not be modified.")
-                                        is_data_corrupt = True
-                                        break # Stop processing rows in this chunk
+                                    pos_val = row["pos"]
+                                    if pd.isna(pos_val):
+                                        pos = 0
+                                    else:
+                                        pos = int(pos_val)
+                                        if not -32768 <= pos <= 32767:
+                                            log.error(f"CORRUPTED DATA DETECTED: 'pos' value {pos} is out of smallint range. "
+                                                      f"Problematic row: {row.to_dict()}. "
+                                                      f"Aborting update for {file_name}. The 'results' table will not be modified.")
+                                            is_data_corrupt = True
+                                            break # Stop processing rows in this chunk
                                     
                                     all_rows_to_insert.append((
                                         row["competitionId"], row["eventId"], row["roundTypeId"], pos, row["best"],
@@ -562,6 +567,7 @@ def update_full_database():
                                     ))
                                 except (KeyError, ValueError, TypeError) as e:
                                     log.error(f"CORRUPTED DATA DETECTED: Error processing row in chunk {i+1}: {e}. "
+                                              f"Problematic row: {row.to_dict()}. "
                                               f"Aborting update for {file_name}. The 'results' table will not be modified.")
                                     is_data_corrupt = True
                                     break # Stop processing rows in this chunk
