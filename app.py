@@ -301,8 +301,20 @@ def update_full_database():
                 elif file_name == "WCA_export_RanksAverage.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
+
+                    # Check if file is empty or only contains headers
+                    if not file_content.strip() or len(file_content.strip().split('\n')) <= 1:
+                        log.info(f"File {file_name} is empty or contains only headers. Skipping processing.")
+                        continue
+
                     df = pd.read_csv(io.StringIO(file_content), delimiter="\t",
                                     skip_blank_lines=True, low_memory=False)
+
+                    # Additional check if DataFrame is empty after parsing
+                    if df.empty:
+                        log.info(f"File {file_name} resulted in empty DataFrame. Skipping processing.")
+                        continue
+
                     data = df.to_dict(orient="records")
                     with get_connection() as conn:
                         with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
@@ -336,8 +348,20 @@ def update_full_database():
                 elif file_name == "WCA_export_RanksSingle.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
+
+                    # Check if file is empty or only contains headers
+                    if not file_content.strip() or len(file_content.strip().split('\n')) <= 1:
+                        log.info(f"File {file_name} is empty or contains only headers. Skipping processing.")
+                        continue
+
                     df = pd.read_csv(io.StringIO(file_content), delimiter="\t",
                                     skip_blank_lines=True, low_memory=False)
+
+                    # Additional check if DataFrame is empty after parsing
+                    if df.empty:
+                        log.info(f"File {file_name} resulted in empty DataFrame. Skipping processing.")
+                        continue
+
                     data = df.to_dict(orient="records")
                     with get_connection() as conn:
                         with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
