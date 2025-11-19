@@ -1191,5 +1191,50 @@ def get_rank(state_id, type, event_id):
         log.error(f"Error fetching ranks: {e}")
         return jsonify({"success": False, "message": "Error fetching ranks"}), 500
 
+@app.route("/competitor-states/<competition_id>", methods=["GET"])
+def get_competitor_states(competition_id):
+    try:
+        # Fetch WCIF data from WCA API
+        wcif_url = f"https://www.worldcubeassociation.org/api/v0/competitions/{competition_id}/wcif/public"
+        log.info(f"Fetching WCIF data from {wcif_url}")
+        
+        response = requests.get(wcif_url)
+        response.raise_for_status()
+        wcif_data = response.json()
+        
+        # Extract wcaIds from persons, filtering out null values
+        wca_ids = [
+            person.get("wcaId") 
+            for person in wcif_data.get("persons", []) 
+            if person.get("wcaId") is not None
+        ]
+        
+        if not wca_ids:
+            log.warning(f"No WCA IDs found for competition: {competition_id}")
+            return jsonify({"success": True, "competitors": []})
+        
+        log.info(f"Found {len(wca_ids)} competitors with WCA IDs")
+        
+        # Query database for state information
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                cur.execute(
+                    """SELECT id, "stateId" FROM persons WHERE id = ANY(%s)""",
+                    (wca_ids,)
+                )
+                competitors = cur.fetchall()
+                competitors_data = [dict(competitor._asdict()) for competitor in competitors]
+                log.info(f"Fetched state data for {len(competitors_data)} competitor(s)")
+                
+        return jsonify({"success": True, "competitors": competitors_data})
+        
+    except requests.HTTPError as e:
+        log.error(f"Error fetching WCIF data: {e}")
+        return jsonify({"success": False, "message": f"Error fetching competition data: {e}"}), 500
+    except Exception as e:
+        log.error(f"Error fetching competitor states: {e}")
+        return jsonify({"success": False, "message": "Error fetching competitor states"}), 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
