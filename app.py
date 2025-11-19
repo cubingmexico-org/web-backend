@@ -1111,7 +1111,22 @@ def get_teams():
     except Exception as e:
         log.error(f"Error fetching teams: {e}")
         return jsonify({"success": False, "message": "Error fetching teams"}), 500
-    
+
+@app.route("/states", methods=["GET"])
+def get_states():
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info("Fetching all states")
+                cur.execute("SELECT * FROM states")
+                states = cur.fetchall()
+                states_list = [dict(state._asdict()) for state in states]
+                log.info(f"Fetched {len(states_list)} state(s)")
+        return jsonify({"success": True, "states": states_list})
+    except Exception as e:
+        log.error(f"Error fetching states: {e}")
+        return jsonify({"success": False, "message": "Error fetching states"}), 500
+
 @app.route("/teams/<state_id>", methods=["GET"])
 def get_team_by_id(state_id):
     try:
