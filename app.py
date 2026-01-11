@@ -134,7 +134,7 @@ def update_full_database():
                                         "information": row["information"],
                                         "start_date": start_date,
                                         "end_date": end_date,
-                                        "cancelled": row["cancelled"],
+                                        "cancelled": bool(row["cancelled"]),
                                         "venue": row["venue"],
                                         "venue_address": row["venue_address"],
                                         "venue_details": row["venue_details"],
@@ -225,6 +225,28 @@ def update_full_database():
                                                 }
                                             )
 
+                # elif file_name == "WCA_export_championships.tsv":
+                #     log.info(f"Processing file: {file_name}")
+                #     file_content = z.read(file_name).decode("utf-8")
+                #     cleaned_content = file_content.replace('"', '')
+                #     df = pd.read_csv(io.StringIO(cleaned_content), delimiter="\t", skip_blank_lines=True, na_values=["NULL"])
+                #     championships = df.to_dict(orient="records")
+                #     with get_connection() as conn:
+                #         with conn.cursor() as cur:
+                #             for row in championships:
+                #                 cur.execute(
+                #                     """
+                #                     INSERT INTO championships (id, competition_id, championship_type)
+                #                     VALUES (%(id)s, %(competition_id)s, %(championship_type)s)
+                #                     ON CONFLICT DO NOTHING
+                #                     """,
+                #                     {
+                #                         "id": row["id"],
+                #                         "competition_id": row["competition_id"],
+                #                         "championship_type": row["championship_type"]
+                #                     }
+                #                 )
+
                 elif file_name == "WCA_export_events.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
@@ -263,7 +285,7 @@ def update_full_database():
                                     """,
                                     {
                                         "id": row["id"],
-                                        "final": row["final"],
+                                        "final": bool(row["final"]),
                                         "name": row["name"],
                                         "rank": row["rank"],
                                         "cell_name": row["cell_name"]

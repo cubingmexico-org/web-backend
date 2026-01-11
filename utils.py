@@ -2,7 +2,7 @@ from geopy.geocoders import Nominatim
 
 def get_state_from_coordinates(latitude, longitude):
     try:
-        geolocator = Nominatim(user_agent="my_geocoder")
+        geolocator = Nominatim(user_agent="cubing-mexico", timeout=10)
         location = geolocator.reverse((latitude, longitude), addressdetails=True)
         if location and "address" in location.raw:
             # Return state if available, otherwise default to "Ciudad de México"
