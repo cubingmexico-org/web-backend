@@ -312,8 +312,8 @@ def update_full_database():
                                         "name": row["name"],
                                         "sort_by": row["sort_by"],
                                         "sort_by_second": row["sort_by_second"],
-                                        "trim_fastest_n": row["trim_fastest_n"],
-                                        "trim_slowest_n": row["trim_slowest_n"]
+                                        "trim_fastest_n": bool(row["trim_fastest_n"]),
+                                        "trim_slowest_n": bool(row["trim_slowest_n"])
                                     }
                                 )
 
@@ -992,8 +992,8 @@ def update_sum_of_ranks():
 
         single_query = f"""
         WITH all_events AS (
-          SELECT DISTINCT "event_id" FROM ranks_single
-          WHERE "event_id" NOT IN ({excluded})
+          SELECT DISTINCT event_id FROM ranks_single
+          WHERE event_id NOT IN ({excluded})
         ),
         all_people AS (
           SELECT DISTINCT wca_id, name FROM persons
@@ -1078,7 +1078,7 @@ def update_sum_of_ranks():
                         INSERT INTO sum_of_ranks (rank, person_id, result_type, overall, events)
                         VALUES (%s, %s, %s, %s, %s)
                         """,
-                        (rank, row.id, 'single', row.overall, psycopg2.extras.Json(row.events))
+                        (rank, row.wca_id, 'single', row.overall, psycopg2.extras.Json(row.events))
                     )
                     rank += 1
                 conn.commit()  # Add this to persist changes
@@ -1099,7 +1099,7 @@ def update_sum_of_ranks():
                         INSERT INTO sum_of_ranks (rank, person_id, result_type, overall, events)
                         VALUES (%s, %s, %s, %s, %s)
                         """,
-                        (rank, row.id, 'average', row.overall, psycopg2.extras.Json(row.events))
+                        (rank, row.wca_id, 'average', row.overall, psycopg2.extras.Json(row.events))
                     )
                     rank += 1
                 conn.commit()
