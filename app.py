@@ -76,7 +76,26 @@ def update_full_database():
     zip_bytes = io.BytesIO(response.content)
     try:
         with zipfile.ZipFile(zip_bytes, "r") as z:
-            for file_name in z.namelist():
+            # Define the order of file processing
+            file_processing_order = [
+                "WCA_export_events.tsv",
+                "WCA_export_formats.tsv",
+                "WCA_export_round_types.tsv",
+                "WCA_export_persons.tsv",
+                "WCA_export_competitions.tsv",
+                "WCA_export_championships.tsv",
+                "WCA_export_ranks_single.tsv",
+                "WCA_export_ranks_average.tsv",
+                "WCA_export_results.tsv",
+                "WCA_export_result_attempts.tsv",
+            ]
+            
+            available_files = set(z.namelist())
+            
+            for file_name in file_processing_order:
+                if file_name not in available_files:
+                    log.warning(f"Expected file {file_name} not found in zip archive. Skipping.")
+                    continue
                 if file_name == "WCA_export_competitions.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_content = z.read(file_name).decode("utf-8")
