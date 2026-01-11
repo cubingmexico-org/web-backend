@@ -196,7 +196,7 @@ def update_full_database():
                                     for match in delegate_pattern.finditer(str(row["delegates"])):
                                         delegate_name = match.group(1)
                                         delegate_email = match.group(2)
-                                        exists = any(d.wca_id == delegate_email for d in delegates)
+                                        exists = any(d.id == delegate_email for d in delegates)
                                         cur.execute(
                                             "SELECT wca_id FROM persons WHERE name = %s",
                                             (delegate_name,)
