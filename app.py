@@ -161,7 +161,7 @@ def update_full_database():
                                         )
                                     # organizers
                                     organizer_pattern = re.compile(r"\{([^}]+)\}\{mailto:([^}]+)\}")
-                                    for match in organizer_pattern.finditer(str(row["organizer"])):
+                                    for match in organizer_pattern.finditer(str(row["organizers"])):
                                         organizer_name = match.group(1)
                                         organizer_email = match.group(2)
                                         exists = any(o.id == organizer_email for o in organizers)
@@ -193,7 +193,7 @@ def update_full_database():
                                         )
                                     # delegates
                                     delegate_pattern = re.compile(r"\{([^}]+)\}\{mailto:([^}]+)\}")
-                                    for match in delegate_pattern.finditer(str(row["wca_delegate"])):
+                                    for match in delegate_pattern.finditer(str(row["delegates"])):
                                         delegate_name = match.group(1)
                                         delegate_email = match.group(2)
                                         exists = any(d.wca_id == delegate_email for d in delegates)
