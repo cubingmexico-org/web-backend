@@ -11,7 +11,7 @@ from datetime import datetime
 from flask import Flask, jsonify, request
 from google.cloud import secretmanager
 import os
-from utils import get_state_from_coordinates
+from utils import get_state_from_coordinates, convert_keys_to_camel_case
 
 EXCLUDED_EVENTS = ["333ft", "333mbo", "magic", "mmagic"]
 SINGLE_EVENTS = ["333fm", "333bf", "333mbf", "444bf", "555bf"]
@@ -740,133 +740,101 @@ def update_full_database():
 
                 elif file_name == "WCA_export_result_attempts.tsv":
                     log.info(f"Processing file: {file_name}")
-                    file_bytes = z.read(file_name)  # Read file bytes from the zip archive member
+                    file_bytes = z.read(file_name)
                     
-                    chunk_size = 10_000_000  # 10MB chunks
-                    total_chunks = -(-len(file_bytes) // chunk_size) if len(file_bytes) > 0 else 0
-                    headers = None
                     all_rows_to_insert = []
                     is_data_corrupt = False
 
-                    if total_chunks == 0:
-                        log.info(f"File {file_name} is empty.")
-                    else:
-                        # Get result_ids from the results table to filter attempts
-                        with get_connection() as conn:
-                            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-                                cur.execute("SELECT id FROM results")
-                                db_results = cur.fetchall()
-                                db_result_ids = {r.id for r in db_results}
-                        
-                        log.info(f"Found {len(db_result_ids)} result IDs in database for filtering attempts.")
+                    # Get result_ids from the results table to filter attempts
+                    with get_connection() as conn:
+                        with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                            cur.execute("SELECT id FROM results")
+                            db_results = cur.fetchall()
+                            db_result_ids = {r.id for r in db_results}
+                    
+                    log.info(f"Found {len(db_result_ids)} result IDs in database for filtering attempts.")
 
-                        for i in range(total_chunks):
-                            if is_data_corrupt:
-                                break  # Stop processing chunks if corruption was found
+                    # Use pandas chunked reading instead of byte-based chunking
+                    chunk_size = 500_000  # rows per chunk
+                    chunk_iter = pd.read_csv(
+                        io.BytesIO(file_bytes),
+                        delimiter="\t",
+                        skip_blank_lines=True,
+                        na_values=["NULL"],
+                        low_memory=False,
+                        chunksize=chunk_size
+                    )
 
-                            start = i * chunk_size
-                            end = (i + 1) * chunk_size
-                            chunk_bytes = file_bytes[start:end]
-                            chunk_str = chunk_bytes.decode("utf-8", errors="ignore")
-                            
-                            log.info(f"Processing chunk {i + 1} of {total_chunks} for {file_name}")
+                    chunk_num = 0
+                    for current_df_chunk in chunk_iter:
+                        chunk_num += 1
+                        log.info(f"Processing chunk {chunk_num} for {file_name}")
 
-                            current_df_chunk = None
-                            if i == 0:
-                                current_df_chunk = pd.read_csv(
-                                    io.StringIO(chunk_str),
-                                    delimiter="\t",
-                                    skip_blank_lines=True,
-                                    na_values=["NULL"],
-                                    low_memory=False
-                                )
-                                if not current_df_chunk.empty:
-                                    headers = current_df_chunk.columns.tolist()
-                                    log.debug(f"Headers extracted from first chunk: {headers}")
-                                else:
-                                    log.warning(f"First chunk of {file_name} is empty. Aborting processing.")
-                                    break
-                            else:
-                                if headers is None:
-                                    log.error(f"Headers not available for chunk {i + 1}. Aborting processing.")
-                                    break
-                                chunk_with_headers_str = "\t".join(headers) + "\n" + chunk_str
-                                current_df_chunk = pd.read_csv(
-                                    io.StringIO(chunk_with_headers_str),
-                                    delimiter="\t",
-                                    skip_blank_lines=True,
-                                    na_values=["NULL"],
-                                    low_memory=False,
-                                    header=0,
-                                    names=headers
-                                )
-                            
-                            if current_df_chunk is None or current_df_chunk.empty:
-                                log.info(f"Chunk {i + 1} is empty. Skipping.")
-                                continue
+                        if current_df_chunk.empty:
+                            log.info(f"Chunk {chunk_num} is empty. Skipping.")
+                            continue
 
-                            for col in headers:
-                                if col not in current_df_chunk.columns:
-                                    current_df_chunk[col] = pd.NA
+                        # Filter to only include attempts for results we have in our database
+                        df_filtered = current_df_chunk[current_df_chunk["result_id"].isin(db_result_ids)]
 
-                            # Filter to only include attempts for results we have in our database
-                            df_filtered = current_df_chunk[current_df_chunk["result_id"].isin(db_result_ids)]
+                        if df_filtered.empty:
+                            continue
 
-                            if df_filtered.empty:
-                                continue
+                        for _, row in df_filtered.iterrows():
+                            try:
+                                all_rows_to_insert.append((
+                                    row["value"], row["attempt_number"], row["result_id"]
+                                ))
+                            except (KeyError, ValueError, TypeError) as e:
+                                log.error(f"CORRUPTED DATA DETECTED: Error processing row in chunk {chunk_num}: {e}. "
+                                        f"Problematic row: {row.to_dict()}. "
+                                        f"Aborting update for {file_name}.")
+                                is_data_corrupt = True
+                                break
 
-                            for _, row in df_filtered.iterrows():
-                                try:
-                                    all_rows_to_insert.append((
-                                        row["value"], row["attempt_number"], row["result_id"]
-                                    ))
-                                except (KeyError, ValueError, TypeError) as e:
-                                    log.error(f"CORRUPTED DATA DETECTED: Error processing row in chunk {i+1}: {e}. "
-                                              f"Problematic row: {row.to_dict()}. "
-                                              f"Aborting update for {file_name}.")
-                                    is_data_corrupt = True
-                                    break  # Stop processing rows in this chunk
-                        
                         if is_data_corrupt:
-                            log.warning(f"Skipping database update for {file_name} due to corrupted data.")
-                            continue  # Skip to the next file in the zip
+                            break
 
-                        log.info(f"All chunks for {file_name} validated. Total rows to insert: {len(all_rows_to_insert)}.")
+                    if is_data_corrupt:
+                        log.warning(f"Skipping database update for {file_name} due to corrupted data.")
+                        continue
 
-                        # --- Atomic database update ---
-                        if all_rows_to_insert:
-                            log.info(f"Proceeding with atomic update for 'result_attempts' table.")
-                            with get_connection() as conn:
-                                with conn.cursor() as cur:
-                                    try:
-                                        log.info(f"Clearing all data from 'result_attempts' table.")
-                                        cur.execute('DELETE FROM result_attempts')
+                    log.info(f"All chunks for {file_name} validated. Total rows to insert: {len(all_rows_to_insert)}.")
 
-                                        log.info(f"Inserting {len(all_rows_to_insert)} rows into 'result_attempts' table.")
-                                        execute_values(
-                                            cur,
-                                            """
-                                            INSERT INTO result_attempts
-                                            (value, attempt_number, result_id)
-                                            VALUES %s
-                                            ON CONFLICT DO NOTHING
-                                            """,
-                                            all_rows_to_insert
-                                        )
-                                        conn.commit()
-                                        log.info(f"Successfully committed changes to 'result_attempts' table.")
-                                    except Exception as e:
-                                        log.error(f"An error occurred during the atomic update for {file_name}: {e}. Rolling back.")
-                                        conn.rollback()
-                                        continue  # Move to next file
-                        else:
-                            log.info(f"No matching result_attempts found. Clearing 'result_attempts' table.")
-                            with get_connection() as conn:
-                                with conn.cursor() as cur:
+                    # --- Atomic database update ---
+                    if all_rows_to_insert:
+                        log.info(f"Proceeding with atomic update for 'result_attempts' table.")
+                        with get_connection() as conn:
+                            with conn.cursor() as cur:
+                                try:
+                                    log.info(f"Clearing all data from 'result_attempts' table.")
                                     cur.execute('DELETE FROM result_attempts')
-                            log.info(f"'result_attempts' table cleared.")
 
-                        log.info(f"Finished processing all chunks for {file_name}.")
+                                    log.info(f"Inserting {len(all_rows_to_insert)} rows into 'result_attempts' table.")
+                                    execute_values(
+                                        cur,
+                                        """
+                                        INSERT INTO result_attempts
+                                        (value, attempt_number, result_id)
+                                        VALUES %s
+                                        ON CONFLICT DO NOTHING
+                                        """,
+                                        all_rows_to_insert
+                                    )
+                                    conn.commit()
+                                    log.info(f"Successfully committed changes to 'result_attempts' table.")
+                                except Exception as e:
+                                    log.error(f"An error occurred during the atomic update for {file_name}: {e}. Rolling back.")
+                                    conn.rollback()
+                                    continue  # Move to next file
+                    else:
+                        log.info(f"No matching result_attempts found. Clearing 'result_attempts' table.")
+                        with get_connection() as conn:
+                            with conn.cursor() as cur:
+                                cur.execute('DELETE FROM result_attempts')
+                        log.info(f"'result_attempts' table cleared.")
+
+                    log.info(f"Finished processing all chunks for {file_name}.")
         log.info("Database updated successfully")
         return jsonify({"success": True, "message": "Database updated successfully"})
     except Exception as e:
@@ -1301,7 +1269,7 @@ def get_teams():
                 log.info("Fetching all teams")
                 cur.execute("SELECT * FROM teams")
                 teams = cur.fetchall()
-                teams_list = [dict(team._asdict()) for team in teams]
+                teams_list = [convert_keys_to_camel_case(dict(team._asdict())) for team in teams]
                 log.info(f"Fetched {len(teams_list)} team(s)")
         return jsonify({"success": True, "teams": teams_list})
     except Exception as e:
@@ -1332,7 +1300,7 @@ def get_team_by_id(state_id):
                 cur.execute("""SELECT * FROM teams WHERE state_id = %s""", (state_id,))
                 team = cur.fetchone()
                 if team:
-                    team_data = dict(team._asdict())
+                    team_data = convert_keys_to_camel_case(dict(team._asdict()))
                     log.info(f"Fetched team: {team_data}")
                     return jsonify({"success": True, "team": team_data})
                 else:
@@ -1364,7 +1332,7 @@ def get_rank(state_id, type, event_id):
                 if ranks:
                     # Format the response as an array of rank data
                     rank_data = [
-                        {
+                        convert_keys_to_camel_case({
                             "rank_type": type,
                             "person_id": rank.person_id,
                             "event_id": rank.event_id,
@@ -1375,7 +1343,7 @@ def get_rank(state_id, type, event_id):
                                 "country": rank.country_rank,
                                 "state": rank.state_rank
                             }
-                        }
+                        })
                         for rank in ranks
                     ]
                     log.info(f"Fetched {len(rank_data)} ranks")
@@ -1419,7 +1387,7 @@ def get_competitor_states(competition_id):
                     (wca_ids,)
                 )
                 competitors = cur.fetchall()
-                competitors_data = [dict(competitor._asdict()) for competitor in competitors]
+                competitors_data = [convert_keys_to_camel_case(dict(competitor._asdict())) for competitor in competitors]
                 log.info(f"Fetched state data for {len(competitors_data)} competitor(s)")
                 
         return jsonify({"success": True, "competitors": competitors_data})
