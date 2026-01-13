@@ -588,7 +588,8 @@ def update_full_database():
                                     delimiter="\t",
                                     skip_blank_lines=True,
                                     na_values=["NULL"],
-                                    low_memory=False
+                                    low_memory=False,
+                                    dtype={"id": str}
                                 )
                                 if not current_df_chunk.empty:
                                     headers = current_df_chunk.columns.tolist()
@@ -608,7 +609,8 @@ def update_full_database():
                                     na_values=["NULL"],
                                     low_memory=False,
                                     header=0,
-                                    names=headers
+                                    names=headers,
+                                    dtype={"id": str}  # Force id to be read as string
                                 )
                             
                             if current_df_chunk is None or current_df_chunk.empty:
