@@ -739,16 +739,10 @@ def update_full_database():
                         with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
                             cur.execute("SELECT id FROM results")
                             db_results = cur.fetchall()
-                            db_result_ids = {r.id for r in db_results}
+                            # Convert to integers to match the CSV data types
+                            db_result_ids = {int(r.id) for r in db_results}
                     
                     log.info(f"Found {len(db_result_ids)} result IDs in database for filtering attempts.")
-                    
-                    # Debug: log a sample of result IDs
-                    if db_result_ids:
-                        sample_ids = list(db_result_ids)[:5]
-                        log.info(f"Sample of db_result_ids: {sample_ids}")
-                    else:
-                        log.warning("db_result_ids is EMPTY - no results in database!")
 
                     # Use pandas chunked reading instead of byte-based chunking
                     chunk_size = 500_000  # rows per chunk
@@ -770,12 +764,8 @@ def update_full_database():
                             log.info(f"Chunk {chunk_num} is empty. Skipping.")
                             continue
 
-                        log.info(f"Chunk {chunk_num} has {len(current_df_chunk)} rows. Filtering to include only attempts with valid result_ids.")
-
                         # Filter to only include attempts for results we have in our database
                         df_filtered = current_df_chunk[current_df_chunk["result_id"].isin(db_result_ids)]
-                        
-                        log.info(f"After filtering: {len(df_filtered)} rows match existing result_ids.")
 
                         if df_filtered.empty:
                             continue
