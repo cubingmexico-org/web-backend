@@ -739,8 +739,7 @@ def update_full_database():
                         with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
                             cur.execute("SELECT id FROM results")
                             db_results = cur.fetchall()
-                            # Convert to integers to match the CSV data types
-                            db_result_ids = {int(r.id) for r in db_results}
+                            db_result_ids = {r.id for r in db_results}
                     
                     log.info(f"Found {len(db_result_ids)} result IDs in database for filtering attempts.")
 
@@ -752,7 +751,8 @@ def update_full_database():
                         skip_blank_lines=True,
                         na_values=["NULL"],
                         low_memory=False,
-                        chunksize=chunk_size
+                        chunksize=chunk_size,
+                        dtype={"result_id": str}  # Force result_id to be read as string
                     )
 
                     chunk_num = 0
