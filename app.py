@@ -765,8 +765,10 @@ def update_full_database():
 
                         # Filter to only include attempts for results we have in our database
                         df_filtered = current_df_chunk[current_df_chunk["result_id"].isin(db_result_ids)]
+                        log.info(f"Chunk {chunk_num}: {len(df_filtered)} matching result_attempts found after filtering.")
 
                         if df_filtered.empty:
+                            log.info(f"No matching result_attempts found in chunk {chunk_num}. Skipping.")
                             continue
 
                         for _, row in df_filtered.iterrows():
