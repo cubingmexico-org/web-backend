@@ -763,17 +763,16 @@ def update_full_database():
                             log.info(f"Chunk {chunk_num} is empty. Skipping.")
                             continue
 
+                        log.info(f"Filtering chunk {current_df_chunk} to include only attempts with valid result_ids.")
+
                         # Filter to only include attempts for results we have in our database
                         df_filtered = current_df_chunk[current_df_chunk["result_id"].isin(db_result_ids)]
-                        log.info(f"Chunk {chunk_num}: {len(df_filtered)} matching result_attempts found after filtering.")
 
                         if df_filtered.empty:
-                            log.info(f"No matching result_attempts found in chunk {chunk_num}. Skipping.")
                             continue
 
                         for _, row in df_filtered.iterrows():
                             try:
-                                log.info(f"Processing attempt row: {row.to_dict()}")
                                 all_rows_to_insert.append((
                                     row["value"], row["attempt_number"], row["result_id"]
                                 ))
