@@ -59,17 +59,6 @@ def update_full_database():
         response = requests.get(url)
         response.raise_for_status()
 
-        content_disposition = response.headers.get('content-disposition')
-        if content_disposition:
-            filename_match = re.search(r'filename="?([^"]+)"?', content_disposition)
-            if filename_match:
-                filename = filename_match.group(1)
-                log.info(f"Downloaded file with filename: {filename}")
-            else:
-                log.warning("Could not determine filename from Content-Disposition header.")
-        else:
-            log.warning("Content-Disposition header not found in response.")
-
     except requests.HTTPError as e:
         return jsonify({"error": f"Failed to fetch zip file: {e}"}), 500
 
@@ -782,6 +771,7 @@ def update_full_database():
 
                         for _, row in df_filtered.iterrows():
                             try:
+                                log.info(f"Processing attempt row: {row.to_dict()}")
                                 all_rows_to_insert.append((
                                     row["value"], row["attempt_number"], row["result_id"]
                                 ))
