@@ -986,8 +986,8 @@ def update_sum_of_ranks():
           pe.name,
           json_agg(
             json_build_object(
-              'event_id', pe.event_id,
-              'country_rank', COALESCE(rs.country_rank, wr.worst_rank),
+              'eventId', pe.event_id,
+              'countryRank', COALESCE(rs.country_rank, wr.worst_rank),
               'completed', CASE WHEN rs.country_rank IS NULL THEN false ELSE true END
             )
           ) AS events,
@@ -1022,8 +1022,8 @@ def update_sum_of_ranks():
           pe.name,
           json_agg(
             json_build_object(
-              'event_id', pe.event_id,
-              'country_rank', COALESCE(ra.country_rank, wr.worst_rank),
+              'eventId', pe.event_id,
+              'countryRank', COALESCE(ra.country_rank, wr.worst_rank),
               'completed', CASE WHEN ra.country_rank IS NULL THEN false ELSE true END
             )
           ) AS events,
