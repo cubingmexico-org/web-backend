@@ -732,7 +732,60 @@ def update_full_database():
                 elif file_name == "WCA_export_result_attempts.tsv":
                     log.info(f"Processing file: {file_name}")
                     file_bytes = z.read(file_name)
-                    
+
+                    # --- Start: Pre-check using export_metadata to determine if result_attempts should be skipped ---
+                    try:
+                        with get_connection() as conn:
+                            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                                cur.execute("""
+                                    SELECT value FROM export_metadata WHERE key = 'last_competition'
+                                """)
+                                metadata_record = cur.fetchone()
+                                last_processed_comp_id = metadata_record.value if metadata_record else None
+
+                                if last_processed_comp_id:
+                                    # Read result_ids from the attempts file
+                                    try:
+                                        df_result_ids = pd.read_csv(
+                                            io.BytesIO(file_bytes),
+                                            delimiter="\t",
+                                            usecols=['result_id'],
+                                            skip_blank_lines=True,
+                                            na_values=["NULL"],
+                                            low_memory=False
+                                        )
+                                    except Exception:
+                                        df_result_ids = pd.DataFrame()
+
+                                    if not df_result_ids.empty:
+                                        file_result_ids = list(df_result_ids['result_id'].dropna().unique())
+                                        if file_result_ids:
+                                            # Find latest competition among results referenced by these attempt rows
+                                            cur.execute("""
+                                                SELECT c.id, c.start_date
+                                                FROM competitions c
+                                                JOIN results r ON c.id = r.competition_id
+                                                WHERE r.id = ANY(%s)
+                                                ORDER BY c.start_date DESC, c.id DESC
+                                                LIMIT 1
+                                            """, (file_result_ids,))
+                                            latest_comp_in_file = cur.fetchone()
+
+                                            if latest_comp_in_file:
+                                                cur.execute("""
+                                                    SELECT start_date FROM competitions WHERE id = %s
+                                                """, (last_processed_comp_id,))
+                                                last_processed_comp = cur.fetchone()
+                                                if last_processed_comp and latest_comp_in_file.start_date <= last_processed_comp.start_date:
+                                                    log.info(f"SKIPPING update for {file_name}. "
+                                                            f"The latest competition referenced by attempts in this file ('{latest_comp_in_file.id}' on {latest_comp_in_file.start_date.date()}) "
+                                                            f"is not newer than the last successfully processed competition ('{last_processed_comp_id}' on {last_processed_comp.start_date.date()}).")
+                                                    continue
+                    except Exception as e:
+                        log.error(f"Error during metadata pre-check for {file_name}: {e}. Skipping processing of this file to be safe.")
+                        continue
+                    # --- End: Pre-check metadata for result_attempts ---
+
                     all_rows_to_insert = []
                     is_data_corrupt = False
 
