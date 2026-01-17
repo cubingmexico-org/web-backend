@@ -752,13 +752,14 @@ def update_full_database():
                                             usecols=['result_id'],
                                             skip_blank_lines=True,
                                             na_values=["NULL"],
-                                            low_memory=False
+                                            low_memory=False,
+                                            dtype={"result_id": str}
                                         )
                                     except Exception:
                                         df_result_ids = pd.DataFrame()
 
                                     if not df_result_ids.empty:
-                                        file_result_ids = list(df_result_ids['result_id'].dropna().unique())
+                                        file_result_ids = list(df_result_ids['result_id'].dropna().astype(str).unique())
                                         if file_result_ids:
                                             # Find latest competition among results referenced by these attempt rows
                                             cur.execute("""
