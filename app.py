@@ -1452,11 +1452,11 @@ def get_records(state_id):
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
                 log.info(f"Fetching records for state: {state_id}")
                 
-                # Build excluded events condition
-                excluded_condition = ""
+                # Build excluded events placeholders
+                excluded_placeholders = ""
                 if EXCLUDED_EVENTS:
                     placeholders = ",".join(["%s"] * len(EXCLUDED_EVENTS))
-                    excluded_condition = f"AND rs.event_id NOT IN ({placeholders})"
+                    excluded_placeholders = placeholders
                 
                 # Query for single records
                 single_query = f"""
@@ -1475,7 +1475,7 @@ def get_records(state_id):
                     INNER JOIN events e ON rs.event_id = e.id
                     WHERE p.state_id = %s 
                     AND rs.state_rank = 1
-                    {excluded_condition}
+                    {"AND rs.event_id NOT IN (" + excluded_placeholders + ")" if EXCLUDED_EVENTS else ""}
                     ORDER BY e.rank
                 """
                 
@@ -1496,12 +1496,12 @@ def get_records(state_id):
                     INNER JOIN events e ON ra.event_id = e.id
                     WHERE p.state_id = %s 
                     AND ra.state_rank = 1
-                    {excluded_condition}
+                    {"AND ra.event_id NOT IN (" + excluded_placeholders + ")" if EXCLUDED_EVENTS else ""}
                     ORDER BY e.rank
                 """
                 
                 # Execute queries with proper parameters
-                query_params = [state_id] + list(EXCLUDED_EVENTS) if EXCLUDED_EVENTS else [state_id]
+                query_params = [state_id] + EXCLUDED_EVENTS if EXCLUDED_EVENTS else [state_id]
                 
                 cur.execute(single_query, query_params)
                 single_records = cur.fetchall()
