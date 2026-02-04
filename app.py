@@ -1501,7 +1501,7 @@ def get_records(state_id):
                 """
                 
                 # Execute queries with proper parameters
-                query_params = [state_id] + EXCLUDED_EVENTS if EXCLUDED_EVENTS else [state_id]
+                query_params = [state_id] + list(EXCLUDED_EVENTS) if EXCLUDED_EVENTS else [state_id]
                 
                 cur.execute(single_query, query_params)
                 single_records = cur.fetchall()
