@@ -1445,5 +1445,112 @@ def get_competitor_states(competition_id):
         log.error(f"Error fetching competitor states: {e}")
         return jsonify({"success": False, "message": "Error fetching competitor states"}), 500
 
+@app.route("/records/<state_id>", methods=["GET"])
+def get_records(state_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info(f"Fetching records for state: {state_id}")
+                
+                # Build excluded events condition
+                excluded_condition = ""
+                if EXCLUDED_EVENTS:
+                    placeholders = ",".join(["%s"] * len(EXCLUDED_EVENTS))
+                    excluded_condition = f"AND rs.event_id NOT IN ({placeholders})"
+                
+                # Query for single records
+                single_query = f"""
+                    SELECT 
+                        rs.person_id,
+                        rs.event_id,
+                        rs.best,
+                        rs.world_rank,
+                        rs.continent_rank,
+                        rs.country_rank,
+                        rs.state_rank,
+                        p.name as person_name,
+                        e.name as event_name
+                    FROM ranks_single rs
+                    INNER JOIN persons p ON rs.person_id = p.wca_id
+                    INNER JOIN events e ON rs.event_id = e.id
+                    WHERE p.state_id = %s 
+                    AND rs.state_rank = 1
+                    {excluded_condition}
+                    ORDER BY e.rank
+                """
+                
+                # Query for average records
+                average_query = f"""
+                    SELECT 
+                        ra.person_id,
+                        ra.event_id,
+                        ra.best,
+                        ra.world_rank,
+                        ra.continent_rank,
+                        ra.country_rank,
+                        ra.state_rank,
+                        p.name as person_name,
+                        e.name as event_name
+                    FROM ranks_average ra
+                    INNER JOIN persons p ON ra.person_id = p.wca_id
+                    INNER JOIN events e ON ra.event_id = e.id
+                    WHERE p.state_id = %s 
+                    AND ra.state_rank = 1
+                    {excluded_condition}
+                    ORDER BY e.rank
+                """
+                
+                # Execute queries with proper parameters
+                query_params = [state_id] + EXCLUDED_EVENTS if EXCLUDED_EVENTS else [state_id]
+                
+                cur.execute(single_query, query_params)
+                single_records = cur.fetchall()
+                
+                cur.execute(average_query, query_params)
+                average_records = cur.fetchall()
+                
+                # Format response
+                records_data = {
+                    "single": [
+                        {
+                            "personId": record.person_id,
+                            "personName": record.person_name,
+                            "eventId": record.event_id,
+                            "eventName": record.event_name,
+                            "best": record.best,
+                            "rank": {
+                                "world": record.world_rank,
+                                "continent": record.continent_rank,
+                                "country": record.country_rank,
+                                "state": record.state_rank
+                            }
+                        }
+                        for record in single_records
+                    ],
+                    "average": [
+                        {
+                            "personId": record.person_id,
+                            "personName": record.person_name,
+                            "eventId": record.event_id,
+                            "eventName": record.event_name,
+                            "best": record.best,
+                            "rank": {
+                                "world": record.world_rank,
+                                "continent": record.continent_rank,
+                                "country": record.country_rank,
+                                "state": record.state_rank
+                            }
+                        }
+                        for record in average_records
+                    ]
+                }
+                
+                log.info(f"Fetched {len(single_records)} single records and {len(average_records)} average records for state: {state_id}")
+                return jsonify({"success": True, "records": records_data})
+                
+    except Exception as e:
+        log.error(f"Error fetching records: {e}")
+        return jsonify({"success": False, "message": "Error fetching records"}), 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
