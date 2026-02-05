@@ -17,4 +17,8 @@ EXPOSE 8080
 
 # Run the app using Gunicorn as the production WSGI server,
 # binding to the port provided via the PORT environment variable.
-CMD sh -c "gunicorn --bind 0.0.0.0:${PORT:-8080} --reload --workers 1 --threads 8 --timeout 0 app:app"
+CMD sh -c "if [ \"$FLASK_ENV\" = \"development\" ]; then \
+    gunicorn --bind 0.0.0.0:${PORT:-8080} --reload --workers 1 --threads 8 --timeout 0 app:app; \
+  else \
+    gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 4 --threads 8 --timeout 0 app:app; \
+  fi"

@@ -12,6 +12,7 @@ from flask import Flask, jsonify, request
 from google.cloud import secretmanager
 import os
 from utils import get_state_from_coordinates, convert_keys_to_camel_case
+from functools import wraps
 
 EXCLUDED_EVENTS = ["333ft", "333mbo", "magic", "mmagic"]
 SINGLE_EVENTS = ["333fm", "333bf", "333mbf", "444bf", "555bf"]
@@ -32,10 +33,53 @@ def get_secret(secret_id, project_id, version_id="latest"):
     return response.payload.data.decode("UTF-8")
 
 GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "cubing-mexico")
-DB_URL = get_secret("db_url", GCP_PROJECT_ID)
+
+# For local development, allow DB_URL to be set via environment variable
+# Otherwise, fetch from GCP Secret Manager
+DB_URL = os.environ.get("DB_URL")
+if not DB_URL:
+    log.info("DB_URL not found in environment, fetching from Secret Manager")
+    DB_URL = get_secret("db_url", GCP_PROJECT_ID)
+else:
+    log.info("Using DB_URL from environment variable")
 
 def get_connection():
     return psycopg2.connect(DB_URL)
+
+CRON_SECRET = os.environ.get("CRON_SECRET")
+if not CRON_SECRET:
+    log.info("CRON_SECRET not found in environment, fetching from Secret Manager")
+    CRON_SECRET = get_secret("cron-secret", GCP_PROJECT_ID)
+else:
+    log.info("Using CRON_SECRET from environment variable")
+
+def require_cron_auth(f):
+    """Decorator to restrict endpoints to authorized cron jobs only"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Check for Authorization header with Bearer token
+        auth_header = request.headers.get('Authorization')
+        
+        if not auth_header:
+            log.warning(f"Missing Authorization header for {request.path}")
+            abort(403, description="Access forbidden: Missing authorization")
+        
+        # Extract token from "Bearer <token>" format
+        try:
+            scheme, token = auth_header.split()
+            if scheme.lower() != 'bearer':
+                raise ValueError("Invalid scheme")
+        except ValueError:
+            log.warning(f"Invalid Authorization header format for {request.path}")
+            abort(403, description="Access forbidden: Invalid authorization format")
+        
+        # Validate token
+        if token != CRON_SECRET:
+            log.warning(f"Invalid cron token for {request.path}")
+            abort(403, description="Access forbidden: Invalid credentials")
+        
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Helper function to extract year from competitionId
 def get_year_from_competition_id(competition_id: str):
@@ -52,6 +96,7 @@ def get_year_from_competition_id(competition_id: str):
     return None
 
 @app.route("/update-database", methods=["POST"])
+@require_cron_auth
 def update_full_database():
     url = "https://www.worldcubeassociation.org/export/results/v2/tsv"
     try:
@@ -888,6 +933,7 @@ def update_full_database():
         return jsonify({"success": False, "message": "Error updating database"}), 500
 
 @app.route("/update-state-ranks", methods=["POST"])
+@require_cron_auth
 def update_state_ranks():
     try:
         with get_connection() as conn:
@@ -1018,6 +1064,7 @@ def update_state_ranks():
         return jsonify({"success": False, "message": "Error updating state rankings"}), 500
 
 @app.route("/update-sum-of-ranks", methods=["POST"])
+@require_cron_auth
 def update_sum_of_ranks():
     try:
         log.info("Starting sum of ranks update")
@@ -1144,6 +1191,7 @@ def update_sum_of_ranks():
         return jsonify({"success": False, "message": "Error updating sum of ranks"}), 500
 
 @app.route("/update-kinch-ranks", methods=["POST"])
+@require_cron_auth
 def update_kinch_ranks():
     try:
         log.info("Starting kinch ranks update")
@@ -1264,6 +1312,7 @@ def update_kinch_ranks():
         return jsonify({"success": False, "message": "Error updating kinch ranks"}), 500
 
 @app.route("/update-all", methods=["POST"])
+@require_cron_auth
 def update_all():
     try:
         log.info("Starting all updates")
@@ -1368,7 +1417,15 @@ def get_rank(state_id, type, event_id):
                 
                 # Query to join persons table to get stateId
                 cur.execute(f"""
-                    SELECT rs.person_id, rs.event_id, rs.best, rs.world_rank, rs.continent_rank, rs.country_rank, rs.state_rank
+                    SELECT
+                        rs.person_id,
+                        p.name,
+                        rs.event_id,
+                        rs.best,
+                        rs.world_rank,
+                        rs.continent_rank,
+                        rs.country_rank,
+                        rs.state_rank
                     FROM {table_name} rs
                     INNER JOIN persons p ON rs.person_id = p.wca_id
                     WHERE p.state_id = %s AND rs.event_id = %s
@@ -1378,10 +1435,11 @@ def get_rank(state_id, type, event_id):
                 if ranks:
                     # Format the response as an array of rank data
                     rank_data = [
-                        convert_keys_to_camel_case({
-                            "rank_type": type,
-                            "person_id": rank.person_id,
-                            "event_id": rank.event_id,
+                        {
+                            "rankType": type,
+                            "personId": rank.person_id,
+                            "personName": rank.name,
+                            "eventId": rank.event_id,
                             "best": rank.best,
                             "rank": {
                                 "world": rank.world_rank,
@@ -1389,7 +1447,7 @@ def get_rank(state_id, type, event_id):
                                 "country": rank.country_rank,
                                 "state": rank.state_rank
                             }
-                        })
+                        }
                         for rank in ranks
                     ]
                     log.info(f"Fetched {len(rank_data)} ranks")
