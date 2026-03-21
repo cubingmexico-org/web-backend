@@ -47,11 +47,35 @@ docker run -p 5000:5000 -e GCP_PROJECT_ID=your-gcp-project-id cubing-mexico-back
 - POST /update-sum-of-ranks — compute sum_of_ranks
 - POST /update-kinch-ranks — compute kinch_ranks
 - POST /update-all — run all updates sequentially
+- GET /competitions — list competitions (Mexico only) with pagination and filters
+- GET /competitions/<competition_id> — get one competition (Mexico only) with related events, organizers, delegates and championships
 - GET /teams
 - GET /teams/<state_id>
 - GET /states
 - GET /rank/<state_id>/<type>/<event_id> (`type` = single|average)
 - GET /competitor-states/<competition_id>
+
+### Competitions API
+
+GET /competitions query params:
+- page: integer, default 1
+- page_size: integer, default 20, max 100
+- state_id: filter by Mexican state id
+- event_id: include competitions that contain a given event
+- year: filter by start_date year
+- start_date: YYYY-MM-DD, minimum competition start date
+- end_date: YYYY-MM-DD, maximum competition end date
+- search: case-insensitive text search over competition name and city
+- cancelled: boolean (true/false, 1/0, yes/no)
+
+GET /competitions response includes:
+- success
+- competitions
+- pagination: page, pageSize, total, totalPages
+
+GET /competitions/<competition_id> behavior:
+- Returns success=true with competition data and related arrays when the competition is in Mexico.
+- Returns HTTP 200 with success=false when the competition does not exist or is not available for Mexico.
 
 ## Database (overview)
 Main tables used:

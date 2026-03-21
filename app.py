@@ -8,7 +8,7 @@ import requests
 import logging
 import pandas as pd
 from datetime import datetime
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, abort
 from google.cloud import secretmanager
 import os
 from utils import get_state_from_coordinates, convert_keys_to_camel_case
@@ -94,6 +94,96 @@ def get_year_from_competition_id(competition_id: str):
     if match:
         return int(match.group(1))
     return None
+
+
+def parse_int_query_param(param_name, default_value, min_value=1, max_value=None):
+    raw_value = request.args.get(param_name, default_value)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid '{param_name}'. Must be an integer.")
+
+    if value < min_value:
+        raise ValueError(f"Invalid '{param_name}'. Must be greater than or equal to {min_value}.")
+
+    if max_value is not None and value > max_value:
+        raise ValueError(f"Invalid '{param_name}'. Must be less than or equal to {max_value}.")
+
+    return value
+
+
+def parse_date_query_param(param_name):
+    raw_value = request.args.get(param_name)
+    if not raw_value:
+        return None
+
+    try:
+        return datetime.strptime(raw_value, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"Invalid '{param_name}'. Expected format: YYYY-MM-DD.")
+
+
+def parse_bool_query_param(param_name):
+    raw_value = request.args.get(param_name)
+    if raw_value is None:
+        return None
+
+    normalized = raw_value.strip().lower()
+    if normalized in ["true", "1", "yes"]:
+        return True
+    if normalized in ["false", "0", "no"]:
+        return False
+
+    raise ValueError(f"Invalid '{param_name}'. Expected one of: true, false, 1, 0, yes, no.")
+
+
+def build_competitions_filter_query_parts():
+    where_clauses = ["c.country_id = %s"]
+    query_params = ["Mexico"]
+
+    state_id = request.args.get("state_id")
+    if state_id:
+        where_clauses.append("c.state_id = %s")
+        query_params.append(state_id)
+
+    event_id = request.args.get("event_id")
+    if event_id:
+        where_clauses.append(
+            "EXISTS (SELECT 1 FROM competition_events ce WHERE ce.competition_id = c.id AND ce.event_id = %s)"
+        )
+        query_params.append(event_id)
+
+    year = request.args.get("year")
+    if year:
+        try:
+            year_int = int(year)
+        except ValueError:
+            raise ValueError("Invalid 'year'. Must be an integer.")
+        where_clauses.append("EXTRACT(YEAR FROM c.start_date) = %s")
+        query_params.append(year_int)
+
+    start_date = parse_date_query_param("start_date")
+    if start_date:
+        where_clauses.append("c.start_date >= %s")
+        query_params.append(start_date)
+
+    end_date = parse_date_query_param("end_date")
+    if end_date:
+        where_clauses.append("c.end_date <= %s")
+        query_params.append(end_date)
+
+    search = request.args.get("search")
+    if search and search.strip():
+        search_term = f"%{search.strip()}%"
+        where_clauses.append("(c.name ILIKE %s OR c.city_name ILIKE %s)")
+        query_params.extend([search_term, search_term])
+
+    cancelled = parse_bool_query_param("cancelled")
+    if cancelled is not None:
+        where_clauses.append("c.cancelled = %s")
+        query_params.append(cancelled)
+
+    return where_clauses, query_params
 
 @app.route("/update-database", methods=["POST"])
 @require_cron_auth
@@ -1233,6 +1323,175 @@ def get_states():
     except Exception as e:
         log.error(f"Error fetching states: {e}")
         return jsonify({"success": False, "message": "Error fetching states"}), 500
+
+
+@app.route("/competitions", methods=["GET"])
+def get_competitions():
+    try:
+        page = parse_int_query_param("page", 1, min_value=1)
+        page_size = parse_int_query_param("page_size", 20, min_value=1, max_value=100)
+        offset = (page - 1) * page_size
+
+        where_clauses, query_params = build_competitions_filter_query_parts()
+        where_sql = " AND ".join(where_clauses)
+
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*) AS total
+                    FROM competitions c
+                    WHERE {where_sql}
+                    """,
+                    tuple(query_params)
+                )
+                total = cur.fetchone().total
+
+                cur.execute(
+                    f"""
+                    SELECT c.*, s.name AS state_name
+                    FROM competitions c
+                    LEFT JOIN states s ON s.id = c.state_id
+                    WHERE {where_sql}
+                    ORDER BY c.start_date DESC, c.id DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    tuple(query_params + [page_size, offset])
+                )
+                competitions = cur.fetchall()
+
+        competitions_data = [
+            convert_keys_to_camel_case(dict(competition._asdict()))
+            for competition in competitions
+        ]
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+
+        log.info(
+            "Fetched %s competition(s) for page=%s page_size=%s with total=%s",
+            len(competitions_data),
+            page,
+            page_size,
+            total
+        )
+
+        return jsonify({
+            "success": True,
+            "competitions": competitions_data,
+            "pagination": {
+                "page": page,
+                "pageSize": page_size,
+                "total": total,
+                "totalPages": total_pages
+            }
+        })
+    except ValueError as e:
+        return jsonify({"success": False, "message": str(e)}), 400
+    except Exception as e:
+        log.error(f"Error fetching competitions: {e}")
+        return jsonify({"success": False, "message": "Error fetching competitions"}), 500
+
+
+@app.route("/competitions/<competition_id>", methods=["GET"])
+def get_competition_by_id(competition_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT c.*, s.name AS state_name
+                    FROM competitions c
+                    LEFT JOIN states s ON s.id = c.state_id
+                    WHERE c.id = %s AND c.country_id = %s
+                    """,
+                    (competition_id, "Mexico")
+                )
+                competition = cur.fetchone()
+
+                if not competition:
+                    return jsonify({
+                        "success": False,
+                        "message": "Competition not available for Mexico"
+                    })
+
+                cur.execute(
+                    """
+                    SELECT ce.event_id, e.name AS event_name
+                    FROM competition_events ce
+                    LEFT JOIN events e ON e.id = ce.event_id
+                    WHERE ce.competition_id = %s
+                    ORDER BY e.rank NULLS LAST, ce.event_id
+                    """,
+                    (competition_id,)
+                )
+                event_rows = cur.fetchall()
+
+                cur.execute(
+                    """
+                    SELECT
+                        co.organizer_id AS id,
+                        o.person_id,
+                        o.status,
+                        p.name AS person_name
+                    FROM competition_organizers co
+                    LEFT JOIN organizers o ON o.id = co.organizer_id
+                    LEFT JOIN persons p ON p.wca_id = o.person_id
+                    WHERE co.competition_id = %s
+                    ORDER BY co.organizer_id
+                    """,
+                    (competition_id,)
+                )
+                organizer_rows = cur.fetchall()
+
+                cur.execute(
+                    """
+                    SELECT
+                        cd.delegate_id AS id,
+                        d.person_id,
+                        d.status,
+                        p.name AS person_name
+                    FROM competition_delegates cd
+                    LEFT JOIN delegates d ON d.id = cd.delegate_id
+                    LEFT JOIN persons p ON p.wca_id = d.person_id
+                    WHERE cd.competition_id = %s
+                    ORDER BY cd.delegate_id
+                    """,
+                    (competition_id,)
+                )
+                delegate_rows = cur.fetchall()
+
+                cur.execute(
+                    """
+                    SELECT id, championship_type
+                    FROM championships
+                    WHERE competition_id = %s
+                    ORDER BY id
+                    """,
+                    (competition_id,)
+                )
+                championship_rows = cur.fetchall()
+
+        competition_data = convert_keys_to_camel_case(dict(competition._asdict()))
+        competition_data["events"] = [
+            convert_keys_to_camel_case(dict(event._asdict()))
+            for event in event_rows
+        ]
+        competition_data["organizers"] = [
+            convert_keys_to_camel_case(dict(organizer._asdict()))
+            for organizer in organizer_rows
+        ]
+        competition_data["delegates"] = [
+            convert_keys_to_camel_case(dict(delegate._asdict()))
+            for delegate in delegate_rows
+        ]
+        competition_data["championships"] = [
+            convert_keys_to_camel_case(dict(championship._asdict()))
+            for championship in championship_rows
+        ]
+
+        return jsonify({"success": True, "competition": competition_data})
+    except Exception as e:
+        log.error(f"Error fetching competition by ID: {e}")
+        return jsonify({"success": False, "message": "Error fetching competition"}), 500
 
 @app.route("/teams/<state_id>", methods=["GET"])
 def get_team_by_id(state_id):
