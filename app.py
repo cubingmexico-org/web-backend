@@ -1294,6 +1294,7 @@ def update_all():
             "message": "Error occurred during update_all",
         }), 500
 
+# General
 @app.route("/teams", methods=["GET"])
 def get_teams():
     try:
@@ -1304,10 +1305,29 @@ def get_teams():
                 teams = cur.fetchall()
                 teams_list = [convert_keys_to_camel_case(dict(team._asdict())) for team in teams]
                 log.info(f"Fetched {len(teams_list)} team(s)")
-        return jsonify({"success": True, "teams": teams_list})
+        return jsonify(teams_list)
     except Exception as e:
         log.error(f"Error fetching teams: {e}")
         return jsonify({"success": False, "message": "Error fetching teams"}), 500
+
+@app.route("/teams/<state_id>", methods=["GET"])
+def get_team_by_id(state_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info(f"Fetching team with ID: {state_id}")
+                cur.execute("""SELECT * FROM teams WHERE state_id = %s""", (state_id,))
+                team = cur.fetchone()
+                if team:
+                    team_data = convert_keys_to_camel_case(dict(team._asdict()))
+                    log.info(f"Fetched team: {team_data}")
+                    return jsonify(team_data)
+                else:
+                    log.warning(f"No team found with ID: {state_id}")
+                    return jsonify({"success": False, "message": "Team not found"}), 404
+    except Exception as e:
+        log.error(f"Error fetching team by ID: {e}")
+        return jsonify({"success": False, "message": "Error fetching team"}), 500
 
 @app.route("/states", methods=["GET"])
 def get_states():
@@ -1319,18 +1339,29 @@ def get_states():
                 states = cur.fetchall()
                 states_list = [dict(state._asdict()) for state in states]
                 log.info(f"Fetched {len(states_list)} state(s)")
-        return jsonify({"success": True, "states": states_list})
+        return jsonify(states_list)
     except Exception as e:
         log.error(f"Error fetching states: {e}")
         return jsonify({"success": False, "message": "Error fetching states"}), 500
 
-
+# Competitions
 @app.route("/competitions", methods=["GET"])
 def get_competitions():
     try:
+        def parse_int_query_param(param, default, min_value=None, max_value=None):
+            try:
+                value = int(request.args.get(param, default))
+                if min_value is not None and value < min_value:
+                    value = min_value
+                if max_value is not None and value > max_value:
+                    value = max_value
+                return value
+            except Exception:
+                return default
+
         page = parse_int_query_param("page", 1, min_value=1)
-        page_size = parse_int_query_param("page_size", 20, min_value=1, max_value=100)
-        offset = (page - 1) * page_size
+        size = parse_int_query_param("size", 100, min_value=1, max_value=100)
+        offset = (page - 1) * size
 
         where_clauses, query_params = build_competitions_filter_query_parts()
         where_sql = " AND ".join(where_clauses)
@@ -1356,40 +1387,36 @@ def get_competitions():
                     ORDER BY c.start_date DESC, c.id DESC
                     LIMIT %s OFFSET %s
                     """,
-                    tuple(query_params + [page_size, offset])
+                    tuple(query_params + [size, offset])
                 )
                 competitions = cur.fetchall()
 
-        competitions_data = [
+        items = [
             convert_keys_to_camel_case(dict(competition._asdict()))
             for competition in competitions
         ]
-        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
 
         log.info(
-            "Fetched %s competition(s) for page=%s page_size=%s with total=%s",
-            len(competitions_data),
+            "Fetched %s competition(s) for page=%s size=%s with total=%s",
+            len(items),
             page,
-            page_size,
+            size,
             total
         )
 
         return jsonify({
-            "success": True,
-            "competitions": competitions_data,
             "pagination": {
                 "page": page,
-                "pageSize": page_size,
-                "total": total,
-                "totalPages": total_pages
-            }
+                "size": size
+            },
+            "total": total,
+            "items": items
         })
     except ValueError as e:
         return jsonify({"success": False, "message": str(e)}), 400
     except Exception as e:
         log.error(f"Error fetching competitions: {e}")
         return jsonify({"success": False, "message": "Error fetching competitions"}), 500
-
 
 @app.route("/competitions/<competition_id>", methods=["GET"])
 def get_competition_by_id(competition_id):
@@ -1488,30 +1515,231 @@ def get_competition_by_id(competition_id):
             for championship in championship_rows
         ]
 
-        return jsonify({"success": True, "competition": competition_data})
+        return jsonify(competition_data)
     except Exception as e:
         log.error(f"Error fetching competition by ID: {e}")
         return jsonify({"success": False, "message": "Error fetching competition"}), 500
 
-@app.route("/teams/<state_id>", methods=["GET"])
-def get_team_by_id(state_id):
+@app.route("/competitor-states/<competition_id>", methods=["GET"])
+def get_competitor_states(competition_id):
+    try:
+        # Fetch WCIF data from WCA API
+        wcif_url = f"https://www.worldcubeassociation.org/api/v0/competitions/{competition_id}/wcif/public"
+        log.info(f"Fetching WCIF data from {wcif_url}")
+        
+        response = requests.get(wcif_url)
+        response.raise_for_status()
+        wcif_data = response.json()
+        
+        # Extract wcaIds from persons, filtering out null values
+        wca_ids = [
+            person.get("wcaId") 
+            for person in wcif_data.get("persons", []) 
+            if person.get("wcaId") is not None
+        ]
+        
+        if not wca_ids:
+            log.warning(f"No WCA IDs found for competition: {competition_id}")
+            return jsonify({"success": True, "competitors": []})
+        
+        log.info(f"Found {len(wca_ids)} competitors with WCA IDs")
+        
+        # Query database for state information
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                cur.execute(
+                    """SELECT wca_id, state_id FROM persons WHERE wca_id = ANY(%s)""",
+                    (wca_ids,)
+                )
+                competitors = cur.fetchall()
+                competitors_data = [convert_keys_to_camel_case(dict(competitor._asdict())) for competitor in competitors]
+                log.info(f"Fetched state data for {len(competitors_data)} competitor(s)")
+                
+        return jsonify(competitors_data)
+        
+    except requests.HTTPError as e:
+        log.error(f"Error fetching WCIF data: {e}")
+        return jsonify({"success": False, "message": f"Error fetching competition data: {e}"}), 500
+    except Exception as e:
+        log.error(f"Error fetching competitor states: {e}")
+        return jsonify({"success": False, "message": "Error fetching competitor states"}), 500
+
+# Persons
+@app.route("/persons", methods=["GET"])
+def get_persons():
+    try:
+        # Parse pagination query params
+        def parse_int_query_param(param, default, min_value=None, max_value=None):
+            try:
+                value = int(request.args.get(param, default))
+                if min_value is not None and value < min_value:
+                    value = min_value
+                if max_value is not None and value > max_value:
+                    value = max_value
+                return value
+            except Exception:
+                return default
+
+        page = parse_int_query_param("page", 1, min_value=1)
+        size = parse_int_query_param("size", 100, min_value=1, max_value=100)
+        offset = (page - 1) * size
+
+        with get_connection() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
+                log.info("Fetching persons with pagination")
+                # Get total count
+                cur.execute("SELECT COUNT(*) FROM persons")
+                total = cur.fetchone()[0]
+
+                # Fetch paginated persons
+                cur.execute("SELECT wca_id, name, state_id FROM persons ORDER BY wca_id LIMIT %s OFFSET %s", (size, offset))
+                persons = cur.fetchall()
+
+                # Fetch competitions for all persons
+                cur.execute("SELECT person_id, competition_id FROM results GROUP BY person_id, competition_id")
+                comp_rows = cur.fetchall()
+                person_competitions = {}
+                for row in comp_rows:
+                    person_competitions.setdefault(row.person_id, set()).add(row.competition_id)
+
+                # Fetch championships for all persons
+                cur.execute("SELECT p.wca_id AS person_id, ch.id AS championship_id FROM persons p JOIN championships ch ON ch.competition_id IN (SELECT competition_id FROM results WHERE person_id = p.wca_id)")
+                champ_rows = cur.fetchall()
+                person_championships = {}
+                for row in champ_rows:
+                    person_championships.setdefault(row.person_id, set()).add(row.championship_id)
+
+                # Fetch all single ranks
+                cur.execute("SELECT person_id, event_id, best, world_rank, continent_rank, country_rank, state_rank FROM ranks_single")
+                single_ranks = cur.fetchall()
+                person_single_ranks = {}
+                for r in single_ranks:
+                    person_single_ranks.setdefault(r.person_id, []).append({
+                        "eventId": r.event_id,
+                        "best": r.best,
+                        "rank": {
+                            "world": r.world_rank,
+                            "continent": r.continent_rank,
+                            "country": r.country_rank,
+                            "state": r.state_rank
+                        }
+                    })
+
+                # Fetch all average ranks
+                cur.execute("SELECT person_id, event_id, best, world_rank, continent_rank, country_rank, state_rank FROM ranks_average")
+                average_ranks = cur.fetchall()
+                person_average_ranks = {}
+                for r in average_ranks:
+                    person_average_ranks.setdefault(r.person_id, []).append({
+                        "eventId": r.event_id,
+                        "best": r.best,
+                        "rank": {
+                            "world": r.world_rank,
+                            "continent": r.continent_rank,
+                            "country": r.country_rank,
+                            "state": r.state_rank
+                        }
+                    })
+
+                items = []
+                for person in persons:
+                    wca_id = person.wca_id
+                    competitions = list(person_competitions.get(wca_id, []))
+                    championships = list(person_championships.get(wca_id, []))
+                    items.append({
+                        "id": wca_id,
+                        "name": person.name,
+                        "state": person.state_id,
+                        "numberOfCompetitions": len(competitions),
+                        "competitionIds": competitions,
+                        "numberOfChampionships": len(championships),
+                        "championshipIds": championships,
+                        "rank": {
+                            "singles": person_single_ranks.get(wca_id, []),
+                            "averages": person_average_ranks.get(wca_id, [])
+                        }
+                    })
+                log.info(f"Fetched {len(items)} person(s) for page {page} size {size}")
+        return jsonify({
+            "pagination": {
+                "page": page,
+                "size": size
+            },
+            "total": total,
+            "items": items
+        })
+    except Exception as e:
+        log.error(f"Error fetching persons: {e}")
+        return jsonify({"success": False, "message": "Error fetching persons"}), 500
+
+@app.route("/persons/<wca_id>", methods=["GET"])
+def get_person(wca_id):
     try:
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-                log.info(f"Fetching team with ID: {state_id}")
-                cur.execute("""SELECT * FROM teams WHERE state_id = %s""", (state_id,))
-                team = cur.fetchone()
-                if team:
-                    team_data = convert_keys_to_camel_case(dict(team._asdict()))
-                    log.info(f"Fetched team: {team_data}")
-                    return jsonify({"success": True, "team": team_data})
-                else:
-                    log.warning(f"No team found with ID: {state_id}")
-                    return jsonify({"success": False, "message": "Team not found"}), 404
-    except Exception as e:
-        log.error(f"Error fetching team by ID: {e}")
-        return jsonify({"success": False, "message": "Error fetching team"}), 500
+                # Fetch person basic info
+                cur.execute("SELECT wca_id, name, state_id FROM persons WHERE wca_id = %s", (wca_id,))
+                person = cur.fetchone()
+                if not person:
+                    return jsonify({"success": False, "message": "Person not found"}), 404
 
+                # Fetch competitions for the person
+                cur.execute("SELECT competition_id FROM results WHERE person_id = %s GROUP BY competition_id", (wca_id,))
+                competitions = [row.competition_id for row in cur.fetchall()]
+
+                # Fetch championships for the person
+                cur.execute("SELECT ch.id AS championship_id FROM championships ch WHERE ch.competition_id IN (SELECT competition_id FROM results WHERE person_id = %s)", (wca_id,))
+                championships = [row.championship_id for row in cur.fetchall()]
+
+                # Fetch single ranks
+                cur.execute("SELECT event_id, best, world_rank, continent_rank, country_rank, state_rank FROM ranks_single WHERE person_id = %s", (wca_id,))
+                singles = [
+                    {
+                        "eventId": r.event_id,
+                        "best": r.best,
+                        "rank": {
+                            "world": r.world_rank,
+                            "continent": r.continent_rank,
+                            "country": r.country_rank,
+                            "state": r.state_rank
+                        }
+                    } for r in cur.fetchall()
+                ]
+
+                # Fetch average ranks
+                cur.execute("SELECT event_id, best, world_rank, continent_rank, country_rank, state_rank FROM ranks_average WHERE person_id = %s", (wca_id,))
+                averages = [
+                    {
+                        "eventId": r.event_id,
+                        "best": r.best,
+                        "rank": {
+                            "world": r.world_rank,
+                            "continent": r.continent_rank,
+                            "country": r.country_rank,
+                            "state": r.state_rank
+                        }
+                    } for r in cur.fetchall()
+                ]
+
+                item = {
+                    "id": person.wca_id,
+                    "name": person.name,
+                    "state": person.state_id,
+                    "numberOfCompetitions": len(competitions),
+                    "competitionIds": competitions,
+                    "numberOfChampionships": len(championships),
+                    "championshipIds": championships,
+                    "rank": {
+                        "singles": singles,
+                        "averages": averages
+                    }
+                }
+        return jsonify(item)
+    except Exception as e:
+        log.error(f"Error fetching person: {e}")
+        return jsonify({"success": False, "message": "Error fetching person"}), 500
+
+# Ranks
 @app.route("/rank/<state_id>/<type>/<event_id>", methods=["GET"])
 def get_rank(state_id, type, event_id):
     try:
@@ -1558,57 +1786,13 @@ def get_rank(state_id, type, event_id):
                         for rank in ranks
                     ]
                     log.info(f"Fetched {len(rank_data)} ranks")
-                    return jsonify({"success": True, "ranks": rank_data})
+                    return jsonify(rank_data)
                 else:
                     log.warning(f"No ranks found for state: {state_id}, type: {type}, event: {event_id}")
                     return jsonify({"success": False, "message": "Ranks not found"}), 404
     except Exception as e:
         log.error(f"Error fetching ranks: {e}")
         return jsonify({"success": False, "message": "Error fetching ranks"}), 500
-
-@app.route("/competitor-states/<competition_id>", methods=["GET"])
-def get_competitor_states(competition_id):
-    try:
-        # Fetch WCIF data from WCA API
-        wcif_url = f"https://www.worldcubeassociation.org/api/v0/competitions/{competition_id}/wcif/public"
-        log.info(f"Fetching WCIF data from {wcif_url}")
-        
-        response = requests.get(wcif_url)
-        response.raise_for_status()
-        wcif_data = response.json()
-        
-        # Extract wcaIds from persons, filtering out null values
-        wca_ids = [
-            person.get("wcaId") 
-            for person in wcif_data.get("persons", []) 
-            if person.get("wcaId") is not None
-        ]
-        
-        if not wca_ids:
-            log.warning(f"No WCA IDs found for competition: {competition_id}")
-            return jsonify({"success": True, "competitors": []})
-        
-        log.info(f"Found {len(wca_ids)} competitors with WCA IDs")
-        
-        # Query database for state information
-        with get_connection() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
-                cur.execute(
-                    """SELECT wca_id, state_id FROM persons WHERE wca_id = ANY(%s)""",
-                    (wca_ids,)
-                )
-                competitors = cur.fetchall()
-                competitors_data = [convert_keys_to_camel_case(dict(competitor._asdict())) for competitor in competitors]
-                log.info(f"Fetched state data for {len(competitors_data)} competitor(s)")
-                
-        return jsonify({"success": True, "competitors": competitors_data})
-        
-    except requests.HTTPError as e:
-        log.error(f"Error fetching WCIF data: {e}")
-        return jsonify({"success": False, "message": f"Error fetching competition data: {e}"}), 500
-    except Exception as e:
-        log.error(f"Error fetching competitor states: {e}")
-        return jsonify({"success": False, "message": "Error fetching competitor states"}), 500
 
 @app.route("/records/<state_id>", methods=["GET"])
 def get_records(state_id):
@@ -1711,7 +1895,7 @@ def get_records(state_id):
                 }
                 
                 log.info(f"Fetched {len(single_records)} single records and {len(average_records)} average records for state: {state_id}")
-                return jsonify({"success": True, "records": records_data})
+                return jsonify(records_data)
                 
     except Exception as e:
         log.error(f"Error fetching records: {e}")
