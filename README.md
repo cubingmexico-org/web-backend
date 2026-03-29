@@ -42,18 +42,31 @@ docker build -t cubing-mexico-backend .
 docker run -p 5000:5000 -e GCP_PROJECT_ID=your-gcp-project-id cubing-mexico-backend
 
 ## Important API endpoints
-- POST /update-database — ingest WCA export TSV zip and update DB
-- POST /update-state-ranks — compute stateRank values
-- POST /update-sum-of-ranks — compute sum_of_ranks
-- POST /update-kinch-ranks — compute kinch_ranks
-- POST /update-all — run all updates sequentially
-- GET /competitions — list competitions (Mexico only) with pagination and filters
-- GET /competitions/<competition_id> — get one competition (Mexico only) with related events, organizers, delegates and championships
-- GET /teams
-- GET /teams/<state_id>
-- GET /states
-- GET /rank/<state_id>/<type>/<event_id> (`type` = single|average)
-- GET /competitor-states/<competition_id>
+## Important API endpoints
+
+- **Competitions**
+   - `GET /competitions` — List competitions (Mexico only) with pagination and filters
+   - `GET /competitions/<competition_id>` — Get one competition (Mexico only) with related events, organizers, delegates, and championships
+
+- **Teams & States**
+   - `GET /teams` — List all teams
+   - `GET /teams/<state_id>` — Get team by state ID
+   - `GET /states` — List all states
+
+- **Ranks & Records**
+   - `GET /rank/<state_id>/<type>/<event_id>` — Get ranks for a state, type (`single`|`average`), and event
+   - `GET /records/<state_id>` — Get state records (single and average)
+
+- **Competitors**
+   - `GET /persons` — List persons (with pagination)
+   - `GET /persons/<wca_id>` — Get person by WCA ID
+   - `GET /competitor-states/<competition_id>` — Get state info for competitors in a competition (via WCIF)
+
+- **Database & Rankings (admin/cron)**
+   - `POST /update-database` — Update the full database from WCA exports
+   - `POST /update-state-ranks` — Update state ranks
+   - `POST /update-sum-of-ranks` — Update sum of ranks
+   - `POST /update-kinch-ranks` — Update Kinch ranks
 
 ### Competitions API
 
