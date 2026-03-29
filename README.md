@@ -42,11 +42,11 @@ docker build -t cubing-mexico-backend .
 docker run -p 5000:5000 -e GCP_PROJECT_ID=your-gcp-project-id cubing-mexico-backend
 
 ## Important API endpoints
-## Important API endpoints
 
 - **Competitions**
    - `GET /competitions` — List competitions (Mexico only) with pagination and filters
    - `GET /competitions/<competition_id>` — Get one competition (Mexico only) with related events, organizers, delegates, and championships
+   - `GET /competitor-states/<competition_id>` — Get state info for competitors in a competition (via WCIF)
 
 - **Teams & States**
    - `GET /teams` — List all teams
@@ -60,7 +60,6 @@ docker run -p 5000:5000 -e GCP_PROJECT_ID=your-gcp-project-id cubing-mexico-back
 - **Competitors**
    - `GET /persons` — List persons (with pagination)
    - `GET /persons/<wca_id>` — Get person by WCA ID
-   - `GET /competitor-states/<competition_id>` — Get state info for competitors in a competition (via WCIF)
 
 - **Database & Rankings (admin/cron)**
    - `POST /update-database` — Update the full database from WCA exports
