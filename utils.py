@@ -53,6 +53,22 @@ def parse_int_query_param(param_name, default_value, min_value=1, max_value=None
     return value
 
 
+def parse_int_query_param_or_default(param_name, default_value, min_value=None, max_value=None):
+    raw_value = request.args.get(param_name, default_value)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return default_value
+
+    if min_value is not None and value < min_value:
+        return min_value
+
+    if max_value is not None and value > max_value:
+        return max_value
+
+    return value
+
+
 def parse_date_query_param(param_name):
     raw_value = request.args.get(param_name)
     if not raw_value:

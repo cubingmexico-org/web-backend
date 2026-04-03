@@ -15,6 +15,7 @@ from utils import (
     get_state_from_coordinates,
     convert_keys_to_camel_case,
     build_competitions_filter_query_parts,
+    parse_int_query_param_or_default,
 )
 from functools import wraps
 
@@ -1248,19 +1249,8 @@ def get_states():
 @app.route("/competitions", methods=["GET"])
 def get_competitions():
     try:
-        def parse_int_query_param(param, default, min_value=None, max_value=None):
-            try:
-                value = int(request.args.get(param, default))
-                if min_value is not None and value < min_value:
-                    value = min_value
-                if max_value is not None and value > max_value:
-                    value = max_value
-                return value
-            except Exception:
-                return default
-
-        page = parse_int_query_param("page", 1, min_value=1)
-        size = parse_int_query_param("size", 100, min_value=1, max_value=100)
+        page = parse_int_query_param_or_default("page", 1, min_value=1)
+        size = parse_int_query_param_or_default("size", 100, min_value=1, max_value=100)
         offset = (page - 1) * size
 
         where_clauses, query_params = build_competitions_filter_query_parts()
@@ -1468,20 +1458,8 @@ def get_competitor_states(competition_id):
 @app.route("/persons", methods=["GET"])
 def get_persons():
     try:
-        # Parse pagination query params
-        def parse_int_query_param(param, default, min_value=None, max_value=None):
-            try:
-                value = int(request.args.get(param, default))
-                if min_value is not None and value < min_value:
-                    value = min_value
-                if max_value is not None and value > max_value:
-                    value = max_value
-                return value
-            except Exception:
-                return default
-
-        page = parse_int_query_param("page", 1, min_value=1)
-        size = parse_int_query_param("size", 100, min_value=1, max_value=100)
+        page = parse_int_query_param_or_default("page", 1, min_value=1)
+        size = parse_int_query_param_or_default("size", 100, min_value=1, max_value=100)
         offset = (page - 1) * size
 
         with get_connection() as conn:
