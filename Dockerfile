@@ -9,8 +9,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
-COPY app.py .
-COPY utils.py .
+COPY app.py common.py utils.py ./
+COPY routes ./routes
 
 # Expose the Flask port (optional)
 EXPOSE 8080

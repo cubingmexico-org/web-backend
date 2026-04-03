@@ -9,4 +9,6 @@ services:
       - .env
     volumes:
       - ./app.py:/app/app.py
+      - ./common.py:/app/common.py
       - ./utils.py:/app/utils.py
+      - ./routes:/app/routes
