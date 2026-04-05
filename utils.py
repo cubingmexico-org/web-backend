@@ -98,12 +98,14 @@ def build_competitions_filter_query_parts():
     where_clauses = ["c.country_id = %s"]
     query_params = ["Mexico"]
 
-    state_id = request.args.get("state_id")
+    state_id = request.args.get("stateId") or request.args.get("state_id")
+    if state_id:
+        state_id = state_id.strip()
     if state_id:
         where_clauses.append("c.state_id = %s")
         query_params.append(state_id)
 
-    event_id = request.args.get("event_id")
+    event_id = request.args.get("event_id") or request.args.get("eventId")
     if event_id:
         where_clauses.append(
             "EXISTS (SELECT 1 FROM competition_events ce WHERE ce.competition_id = c.id AND ce.event_id = %s)"

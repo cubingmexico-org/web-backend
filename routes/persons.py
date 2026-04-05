@@ -1,5 +1,5 @@
 import psycopg2.extras
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 
 from common import get_connection, log
 from utils import parse_int_query_param_or_default
@@ -12,17 +12,25 @@ def get_persons():
     try:
         page = parse_int_query_param_or_default("page", 1, min_value=1)
         size = parse_int_query_param_or_default("size", 100, min_value=1, max_value=100)
+        state_id = request.args.get("stateId") or request.args.get("state_id")
+        if state_id:
+            state_id = state_id.strip()
+        if state_id == "":
+            state_id = None
         offset = (page - 1) * size
 
         with get_connection() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.NamedTupleCursor) as cur:
                 log.info("Fetching persons with pagination")
-                cur.execute("SELECT COUNT(*) FROM persons")
+                where_clause = " WHERE state_id = %s" if state_id else ""
+                filter_params = (state_id,) if state_id else ()
+
+                cur.execute(f"SELECT COUNT(*) FROM persons{where_clause}", filter_params)
                 total = cur.fetchone()[0]
 
                 cur.execute(
-                    "SELECT wca_id, name, state_id FROM persons ORDER BY wca_id LIMIT %s OFFSET %s",
-                    (size, offset),
+                    f"SELECT wca_id, name, state_id FROM persons{where_clause} ORDER BY wca_id LIMIT %s OFFSET %s",
+                    (*filter_params, size, offset),
                 )
                 persons = cur.fetchall()
 

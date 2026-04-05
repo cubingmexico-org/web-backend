@@ -58,7 +58,7 @@ docker run -p 5000:5000 -e GCP_PROJECT_ID=your-gcp-project-id cubing-mexico-back
    - `GET /records/<state_id>` — Get state records (single and average)
 
 - **Competitors**
-   - `GET /persons` — List persons (with pagination)
+   - `GET /persons` — List persons (with pagination, optional state filter)
    - `GET /persons/<wca_id>` — Get person by WCA ID
 
 - **Database & Rankings (admin/cron)**
@@ -71,9 +71,9 @@ docker run -p 5000:5000 -e GCP_PROJECT_ID=your-gcp-project-id cubing-mexico-back
 
 GET /competitions query params:
 - page: integer, default 1
-- page_size: integer, default 20, max 100
-- state_id: filter by Mexican state id
-- event_id: include competitions that contain a given event
+- size: integer, default 100, max 100
+- stateId or state_id: filter by Mexican state id
+- eventId or event_id: include competitions that contain a given event
 - year: filter by start_date year
 - start_date: YYYY-MM-DD, minimum competition start date
 - end_date: YYYY-MM-DD, maximum competition end date
@@ -81,13 +81,25 @@ GET /competitions query params:
 - cancelled: boolean (true/false, 1/0, yes/no)
 
 GET /competitions response includes:
-- success
-- competitions
-- pagination: page, pageSize, total, totalPages
+- pagination: page, size
+- total
+- items
 
 GET /competitions/<competition_id> behavior:
-- Returns success=true with competition data and related arrays when the competition is in Mexico.
-- Returns HTTP 200 with success=false when the competition does not exist or is not available for Mexico.
+- Returns the competition object with related arrays (`events`, `organizers`, `delegates`, `championships`) when the competition is in Mexico.
+- Returns HTTP 200 with `{"success": false, "message": "Competition not available for Mexico"}` when the competition does not exist or is not available for Mexico.
+
+### Persons API
+
+GET /persons query params:
+- page: integer, default 1
+- size: integer, default 100, max 100
+- stateId or state_id: filter by state id
+
+GET /persons response includes:
+- pagination: page, size
+- total
+- items
 
 ## Database (overview)
 Main tables used:
