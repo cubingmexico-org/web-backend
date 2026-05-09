@@ -1096,11 +1096,11 @@ def update_sum_of_ranks():
           json_agg(
             json_build_object(
               'eventId', pe.event_id,
-              'countryRank', COALESCE(rs.country_rank, wr.worst_rank),
-              'completed', CASE WHEN rs.country_rank IS NULL THEN false ELSE true END
+              'countryRank', COALESCE(NULLIF(rs.country_rank, 0), wr.worst_rank),
+              'completed', CASE WHEN rs.country_rank IS NULL OR rs.country_rank = 0 THEN false ELSE true END
             )
           ) AS events,
-          SUM(COALESCE(rs.country_rank, wr.worst_rank)) AS overall
+          SUM(COALESCE(NULLIF(rs.country_rank, 0), wr.worst_rank)) AS overall
         FROM people_events pe
         LEFT JOIN ranks_single rs
             ON pe.wca_id = rs.person_id AND pe.event_id = rs.event_id
@@ -1132,11 +1132,11 @@ def update_sum_of_ranks():
           json_agg(
             json_build_object(
               'eventId', pe.event_id,
-              'countryRank', COALESCE(ra.country_rank, wr.worst_rank),
-              'completed', CASE WHEN ra.country_rank IS NULL THEN false ELSE true END
+              'countryRank', COALESCE(NULLIF(ra.country_rank, 0), wr.worst_rank),
+              'completed', CASE WHEN ra.country_rank IS NULL OR ra.country_rank = 0 THEN false ELSE true END
             )
           ) AS events,
-          SUM(COALESCE(ra.country_rank, wr.worst_rank)) AS overall
+          SUM(COALESCE(NULLIF(ra.country_rank, 0), wr.worst_rank)) AS overall
         FROM people_events pe
         LEFT JOIN ranks_average ra
             ON pe.wca_id = ra.person_id AND pe.event_id = ra.event_id
